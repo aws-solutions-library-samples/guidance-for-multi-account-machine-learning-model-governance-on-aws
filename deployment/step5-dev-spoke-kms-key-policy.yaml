@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: 'CloudFormation template to add KMS key access policy to Dev Account'
+
+Parameters:
+  DevSpokeAccountSageMakerRoleName:
+    Type: String
+    Description: Name of the SageMaker Role in the Dev Spoke Account
+    Default: 'DevSpokeAccountSagemakerExecutionRole'
+  KMSKeyHubAccountArn:
+    Type: String
+    Description: ARN of the KMS Key in the Hub Account
+    Default: 'arn:aws:kms:AWS_REGION:HUB_AWS_ACCOUNT_ID:key/xxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxxx'
+
+Resources:
+  KMSCrossAccountPolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      RoleName: !Ref DevSpokeAccountSageMakerRoleName
+      PolicyName: kms-cross-account-policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+              - kms:CreateGrant
+            Resource:
+              - !Ref KMSKeyHubAccountArn

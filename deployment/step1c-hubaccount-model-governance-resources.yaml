@@ -1,0 +1,770 @@
+Transform: AWS::Serverless-2016-10-31
+Description: 'CloudFormation template for SageMaker metrics collection, Model Package State Change Event Capture and setup for dashboard in Amazon QuickSight'
+Parameters:
+  AthenaCatalogName:
+    Description: This is the name of the lambda function that will be created. This
+      name must satisfy the pattern ^[a-z0-9-_]{1,64}$
+    Type: String
+    Default: dynamodb-athena-connector
+    AllowedPattern: ^[a-z0-9-_]{1,64}$
+  SpillBucket:
+    Description: The name of the bucket where this function can spill data.
+    Type: String
+    Default: athena-spill-2
+  SpillPrefix:
+    Description: The prefix within SpillBucket where this function can spill data.
+    Type: String
+    Default: athena-spill
+  LambdaTimeout:
+    Description: Maximum Lambda invocation runtime in seconds. (min 1 - 900 max)
+    Default: 900
+    Type: Number
+  LambdaMemory:
+    Description: Lambda memory in MB (min 128 - 3008 max).
+    Default: 3008
+    Type: Number
+  LambdaRole:
+    Description: (Optional) A custom IAM role to be used by the Connector lambda
+    Type: String
+    Default: ''
+  DisableSpillEncryption:
+    Description: 'WARNING: If set to ''true'' encryption for spilled data is disabled.'
+    Default: 'false'
+    Type: String
+  KMSKeyId:
+    Description: (Optional) By default any data that is spilled to S3 is encrypted
+      using AES-GCM and a randomly generated key. Setting a KMS Key ID allows your
+      Lambda function to use KMS for key generation for a stronger source of encryption
+      keys.
+    Type: String
+    Default: ''
+  PermissionsBoundaryARN:
+    Description: (Optional) An IAM policy ARN to use as the PermissionsBoundary for
+      the created Lambda function's execution role
+    Default: ''
+    Type: String
+  QuickSightUserName:
+    Description: The QuickSight username that to be used to create the Datasource and Dataset (it can be retrieved with the aws cli command - aws quicksight list-users --aws-account-id YOUR_AWS_ACCOUNT_ID --namespace default)
+    Default: ''
+    Type: String
+
+Conditions:
+  HasKMSKeyId:
+    Fn::Not:
+    - Fn::Equals:
+      - Ref: KMSKeyId
+      - ''
+  NotHasLambdaRole:
+    Fn::Equals:
+    - Ref: LambdaRole
+    - ''
+  HasPermissionsBoundary:
+    Fn::Not:
+    - Fn::Equals:
+      - Ref: PermissionsBoundaryARN
+      - ''
+  CreateKMSPolicy:
+    Fn::And:
+    - Condition: HasKMSKeyId
+    - Condition: NotHasLambdaRole
+  IsRegionBAH:
+    Fn::Equals:
+    - Ref: AWS::Region
+    - me-south-1
+  IsRegionHKG:
+    Fn::Equals:
+    - Ref: AWS::Region
+    - ap-east-1
+
+Resources:
+
+# Dynamodb-Athena Connector
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${SpillBucket}-${AWS::Region}-${AWS::AccountId}'
+      AccessControl: Private
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      VersioningConfiguration:
+        Status: Enabled
+
+  ConnectorConfig:
+    DependsOn:
+      - S3Bucket
+    Type: AWS::Serverless::Function
+    Properties:
+      Environment:
+        Variables:
+          disable_spill_encryption:
+            Ref: DisableSpillEncryption
+          spill_bucket:
+            Ref: S3Bucket
+          spill_prefix:
+            Ref: SpillPrefix
+          kms_key_id:
+            Fn::If:
+            - HasKMSKeyId
+            - Ref: KMSKeyId
+            - Ref: AWS::NoValue
+      FunctionName:
+        Ref: AthenaCatalogName
+      PackageType: Image
+      ImageUri:
+        Fn::Sub:
+        - ${Account}.dkr.ecr.${AWS::Region}.amazonaws.com/athena-federation-repository-dynamodb:2024.42.3
+        - Account:
+            Fn::If:
+            - IsRegionBAH
+            - '084828588479'
+            - Fn::If:
+              - IsRegionHKG
+              - 183295418215
+              - 292517598671
+      Description: Enables Amazon Athena to communicate with DynamoDB, making your
+        tables accessible via SQL
+      Timeout:
+        Ref: LambdaTimeout
+      MemorySize:
+        Ref: LambdaMemory
+      Role:
+        Fn::If:
+        - NotHasLambdaRole
+        - Fn::GetAtt:
+          - FunctionRole
+          - Arn
+        - Ref: LambdaRole
+  FunctionRole:
+    Condition: NotHasLambdaRole
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary:
+        Fn::If:
+        - HasPermissionsBoundary
+        - Ref: PermissionsBoundaryARN
+        - Ref: AWS::NoValue
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+
+  FunctionExecutionPolicy:
+    Condition: NotHasLambdaRole
+    DependsOn:
+      - ModelPackageStateChangesTable
+      - MetricsTable
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: FunctionExecutionPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Action:
+          - dynamodb:DescribeTable
+          - dynamodb:ListTables
+          - dynamodb:Query
+          - dynamodb:Scan
+          - dynamodb:PartiQLSelect
+          Effect: Allow
+          Resource: 
+            - !GetAtt ModelPackageStateChangesTable.Arn
+            - !GetAtt MetricsTable.Arn
+        - Action:
+          - glue:GetTableVersions
+          - glue:GetPartitions
+          - glue:GetTables
+          - glue:GetTableVersion
+          - glue:GetDatabases
+          - glue:GetTable
+          - glue:GetPartition
+          - glue:GetDatabase
+          - athena:GetQueryExecution
+          Effect: Allow
+          Resource: '*'
+        - Action:
+          - s3:GetObject
+          - s3:ListBucket
+          - s3:GetBucketLocation
+          - s3:GetObjectVersion
+          - s3:PutObject
+          - s3:PutObjectAcl
+          - s3:GetLifecycleConfiguration
+          - s3:PutLifecycleConfiguration
+          - s3:DeleteObject
+          Effect: Allow
+          Resource:
+          - Fn::Sub:
+            - arn:${AWS::Partition}:s3:::${bucketName}
+            - bucketName:
+                Ref: S3Bucket
+          - Fn::Sub:
+            - arn:${AWS::Partition}:s3:::${bucketName}/*
+            - bucketName:
+                Ref: S3Bucket
+      Roles:
+      - Ref: FunctionRole
+
+  FunctionKMSPolicy:
+    Condition: CreateKMSPolicy
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: FunctionKMSPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Action:
+          - kms:GenerateRandom
+          Effect: Allow
+          Resource: '*'
+        - Action:
+          - kms:GenerateDataKey
+          Effect: Allow
+          Resource:
+            Fn::Sub: arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KMSKeyId}
+      Roles:
+      - Ref: FunctionRole
+
+# DynamoDB table, event rule, lambda
+  MetricsTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: sagemakerendpointmetrics
+      AttributeDefinitions:
+        - AttributeName: endpointarn
+          AttributeType: S
+      KeySchema:
+        - AttributeName: endpointarn
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  ModelPackageStateChangesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: modelpackagestatechanges
+      AttributeDefinitions:
+        - AttributeName: modelpackagearn
+          AttributeType: S
+        - AttributeName: modelstage
+          AttributeType: S
+      KeySchema:
+        - AttributeName: modelpackagearn
+          KeyType: HASH
+        - AttributeName: modelstage
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaLoggingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ModelPackageStateChangeCapture:*"
+        - PolicyName: SageMakerCloudWatchDynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:DescribeEndpoint'
+                  - 'sagemaker:DescribeEndpointConfig'
+                  - 'sagemaker:DescribeModelPackage'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:Query'
+                Resource:
+                  - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/*'
+                  - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint-config/*'
+                  - !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:model-package/*'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*'
+        - PolicyName: SageMakerStarReserouces
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:ListEndpoints'
+                  - 'cloudwatch:GetMetricData'
+                  - 'cloudwatch:ListMetrics'
+                Resource: '*'
+
+  MetricsCollectorFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: SageMakerMetricsCollector
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import time
+          import json
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+              session = boto3.Session()
+              cloudwatch = session.client('cloudwatch')
+              dynamodb = session.resource('dynamodb')
+              table = dynamodb.Table('SageMakerEndpointMetrics')
+
+              paginator = cloudwatch.get_paginator('list_metrics')
+
+              pagination_config = {'IncludeLinkedAccounts': True}
+
+              endpoint_names = set()
+              for page in paginator.paginate(Namespace='/aws/sagemaker/Endpoints', **pagination_config):
+                  for metric in page['Metrics']:
+                      for dimension in metric['Dimensions']:
+                          if dimension['Name'] == 'EndpointName':
+                              endpoint_names.add(dimension['Value'])
+
+              logger.info(f"Found {len(endpoint_names)} SageMaker endpoints: {', '.join(endpoint_names)}")
+
+              current_time = int(time.time())
+              start_time = current_time - 60
+
+              for endpoint_name in endpoint_names:
+                  logger.info(f"Collecting metrics for endpoint: {endpoint_name}")
+                  metrics = cloudwatch.get_metric_data(
+                      MetricDataQueries=[
+                          {'Id': 'invocations', 'MetricStat': {'Metric': {'Namespace': 'AWS/SageMaker', 'MetricName': 'Invocations', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Average'}},
+                          {'Id': 'latency', 'MetricStat': {'Metric': {'Namespace': 'AWS/SageMaker', 'MetricName': 'ModelLatency', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
+                          {'Id': 'precision', 'MetricStat': {'Metric': {'Namespace': 'aws/sagemaker/Endpoints/model-metrics', 'MetricName': 'precision', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
+                          {'Id': 'accuracy', 'MetricStat': {'Metric': {'Namespace': 'aws/sagemaker/Endpoints/model-metrics', 'MetricName': 'accuracy', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
+                          {'Id': 'f2', 'MetricStat': {'Metric': {'Namespace': 'aws/sagemaker/Endpoints/model-metrics', 'MetricName': 'f2', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
+                          {'Id': 'violations', 'MetricStat': {'Metric': {'Namespace': 'aws/sagemaker/Endpoints/model-metrics', 'MetricName': 'total_number_of_violations', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
+                          {"Id":"cpu_utilization", "MetricStat": {"Metric": {"Namespace":"/aws/sagemaker/Endpoints","MetricName": "CPUUtilization","Dimensions":[{"Name":"EndpointName","Value":endpoint_name},{"Name":"VariantName","Value":"AllTraffic"}]},"Period":60,"Stat":"Average","Unit":"Percent"},"Label":"SageMaker Endpoint CPU Utilization"},
+                          {'Id': 'disk', 'MetricStat': {'Metric': {'Namespace': 'AWS/SageMaker', 'MetricName': 'DiskUtilization', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
+                      ],
+                      StartTime=start_time,
+                      EndTime=current_time
+                  )
+                  
+                  item = {
+                      'EndpointName': endpoint_name,
+                      'Timestamp': current_time,
+                      'Invocations': metrics['MetricDataResults'][0]['Values'][0] if metrics['MetricDataResults'][0]['Values'] else 0,
+                      'ModelLatency': metrics['MetricDataResults'][1]['Values'][0] if metrics['MetricDataResults'][1]['Values'] else 0,
+                      'Precision': metrics['MetricDataResults'][2]['Values'][0] if metrics['MetricDataResults'][2]['Values'] else 0,
+                      'Accuracy': metrics['MetricDataResults'][3]['Values'][0] if metrics['MetricDataResults'][3]['Values'] else 0,
+                      'F2Score': metrics['MetricDataResults'][4]['Values'][0] if metrics['MetricDataResults'][4]['Values'] else 0,
+                      'TotalViolations': metrics['MetricDataResults'][5]['Values'][0] if metrics['MetricDataResults'][5]['Values'] else 0,
+                      'CPUUtilization': metrics['MetricDataResults'][6]['Values'][0] if metrics['MetricDataResults'][6]['Values'] else 0,
+                      'DiskUtilization': metrics['MetricDataResults'][7]['Values'][0] if metrics['MetricDataResults'][7]['Values'] else 0,
+                  }
+                  
+                  table.put_item(Item=item)
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Metrics collected and stored successfully')
+              }
+
+      Runtime: python3.12
+      Timeout: 300
+      MemorySize: 256
+
+  ModelPackageStateChangeFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ModelPackageStateChangeCapture
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          from datetime import datetime
+          from botocore.exceptions import ClientError
+          from boto3.dynamodb.conditions import Key
+          import logging
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('modelpackagestatechanges')
+          sagemaker_client = boto3.client('sagemaker')
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              # try:
+                  logger.info("Received event: " + json.dumps(event))
+                  detail = event['detail']
+                  # print("event:",event)
+                  timestamp = datetime.now().isoformat()
+                  event_time = event['time']
+                  
+                  model_package_arn = detail.get('ModelPackageArn', 'N/A')
+                  modelstage = detail.get('ModelLifeCycle', {}).get('Stage', 'N/A') if detail.get('ModelLifeCycle', {}) else "N/A"
+                  
+                  # Define the primary key
+                  key = {
+                      'modelpackagearn': model_package_arn,
+                      'modelstage': modelstage
+                  }
+                  
+                  if model_package_arn != 'N/A':
+                      # Get ModelCard information from describe_model_package
+                      response = sagemaker_client.describe_model_package(ModelPackageName=model_package_arn)
+                      model_card = response.get('ModelCard', {})
+                      logger.info(f"Model Card: {json.dumps(model_card, indent=2)}")
+                      model_card_content = json.loads(model_card.get('ModelCardContent', '{}'))
+                      
+                      # Extract information from model_card_content
+                      business_details = model_card_content.get('business_details', {})
+                      intended_uses = model_card_content.get('intended_uses', {})
+                      additional_info = model_card_content.get('additional_information', {})
+                      custom_details = model_card_content.get('custom_details', {})
+                      model_overview = model_card_content.get('model_overview', {})
+                      custom_details = additional_info.get('custom_details',{})
+                      evaluation_details =  model_card_content.get('evaluation_details', [])
+
+                      item = {
+                          'modelpackagearn': model_package_arn,
+                          'creationtime': detail.get('CreationTime', 'N/A'),
+                          'eventtime': event_time,
+                          'eventtype': event.get('detail-type', 'N/A'),
+                          'usecaseid': custom_details.get('UseCaseId', 'N/A'),
+                          'usecasename': custom_details.get('UseCaseName', 'N/A'),
+                          'usecasestage': custom_details.get('UseCaseStage', 'N/A'),
+                          'modelpackagegroupname': detail.get('ModelPackageGroupName', 'N/A'),
+                          'modelpackageversion': detail.get('ModelPackageVersion', 'N/A'),
+                          'modelowner': model_overview.get('model_creator', 'N/A'),
+                          'modellob': business_details.get('line_of_business', 'N/A'),
+                          'modelproject': business_details.get('purpose_of_model', 'N/A'),
+                          'modelstage': detail.get('ModelLifeCycle', {}).get('Stage', 'N/A')  if detail.get('ModelLifeCycle', {}) else "N/A",
+                          'modelstatus': detail.get('ModelLifeCycle', {}).get('StageStatus', 'N/A')  if detail.get('ModelLifeCycle', {}) else "N/A",
+                          'modelapprovalstatus': detail.get('ModelApprovalStatus', 'N/A'),
+                          'modelrisk': intended_uses.get('risk_rating', 'N/A'),
+                          'modelvalidationmetrics': str(evaluation_details[0]) if len(evaluation_details)>0 else "N/A",
+                          # 'modelmonitormetrics': json.dumps(detail.get('ModelMetrics', {})),
+                          'modelaudittimestamp': timestamp,
+                          # 'source': event.get('source', 'N/A'),
+                          # 'region': event.get('region', 'N/A'),
+                          # 'account': event.get('account', 'N/A'),
+                      }
+                  else:
+                      # Fallback to minimal information if ModelPackageArn is not available
+                      item = {
+                          'modelpackagearn': 'N/A',
+                          'eventtime': event_time,
+                          'creationtime': 'N/A',
+                          'usecaseid': 'N/A',
+                          'usecasename': 'N/A',
+                          'usecasestage': 'N/A',
+                          'modelpackagegroupname': detail.get('ModelPackageGroupName', 'N/A'),
+                          'modelpackageversion': detail.get('ModelPackageVersion', 'N/A'),
+                          'modelowner': 'N/A',
+                          'modellob': 'N/A',
+                          'modelproject': 'N/A',
+                          'modelstage': detail.get('ModelLifeCycle', {}).get('Stage', 'N/A')  if detail.get('ModelLifeCycle', {}) else "N/A",
+                          'modelstatus': detail.get('ModelLifeCycle', {}).get('StageStatus', 'N/A')  if detail.get('ModelLifeCycle', {}) else "N/A",
+                          'modelapprovalstatus': detail.get('ModelApprovalStatus', 'N/A'),
+                          'modelrisk': 'N/A',
+                          'modelvalidationmetrics': '{}',
+                          'modelmonitormetrics': '{}',
+                          'modelaudittimestamp': timestamp
+                          # 'source': event.get('source', 'N/A'),
+                          # 'region': event.get('region', 'N/A'),
+                          # 'account': event.get('account', 'N/A'),
+                      }
+                  
+                  # # Add any additional attributes from the detail
+                  # for k, v in detail.items():
+                      # if k.lower() not in item and k not in ['ModelPackageName', 'EventTime']:
+                          # item[k] = str(v)
+                  
+                  # Combine the key and item data
+                  full_item = {**key, **item}
+                  # print(full_item)
+                  
+                  # Try to retrieve the item if it exists
+                  try:
+                      # response = table.get_item(Key=key)
+                      response = table.query( 
+                                  KeyConditionExpression=
+                                                          Key('modelstage').eq(modelstage) &
+                                                        Key('modelpackagearn').eq(model_package_arn)
+                                  )
+                      # print("ITEM QUERY RESPONSE:",response)
+                      if 'Item' in response:
+                          # Item exists, update it
+                          update_expression = "SET " + ", ".join(f"#{k}=:{k}" for k in item.keys())
+
+                          # Define expression_attribute_values
+                          expression_attribute_values = {f":{k}": v for k, v in item.items()}
+
+                          # Define expression_attribute_names
+                          expression_attribute_names = {f"#{k}": k for k in item.keys()}
+
+                          table.update_item(
+                              Key=key,
+                              UpdateExpression=update_expression,
+                              ExpressionAttributeValues=expression_attribute_values,
+                              ExpressionAttributeNames=expression_attribute_names
+                          )
+                          action = "updated"
+                      else:
+                          # Item doesn't exist, create it
+                          table.put_item(Item=full_item)
+                          action = "created"
+                  except ClientError as e:
+                      if e.response['Error']['Code'] == 'ResourceNotFoundException':
+                          # Table doesn't exist
+                          print(f"Table {table.name} does not exist.")
+                          raise
+                      else:
+                          # Something else has gone wrong
+                          raise
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(f'Event details successfully {action} in DynamoDB')
+                  }
+              # except Exception as e:
+              #     print(f"Error: {str(e)}")
+              #     return {
+              #         'statusCode': 500,
+              #         'body': json.dumps('Error processing the event')
+              #     }
+
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 128
+
+  MetricsCollectorRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: "EventBridge rule to trigger Lambda function every 15 minutes"
+      ScheduleExpression: "rate(15 minutes)"
+      State: "ENABLED"
+      Targets: 
+        - Arn: !GetAtt MetricsCollectorFunction.Arn
+          Id: "TargetMetricsCollectorFunction"
+
+  ModelPackageStateChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ModelPackageStateChangeRule
+      Description: "Rule to capture SageMaker Model Package state changes"
+      EventPattern:
+        source:
+          - "aws.sagemaker"
+        detail-type:
+          - "SageMaker Model Package State Change"
+      State: "ENABLED"
+      Targets: 
+        - Arn: !GetAtt ModelPackageStateChangeFunction.Arn
+          Id: "ModelPackageStateChangeFunction"
+
+
+  PermissionForEventsToInvokeMetricsCollector: 
+    Type: 'AWS::Lambda::Permission'
+    Properties: 
+      FunctionName: !Ref MetricsCollectorFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt MetricsCollectorRule.Arn
+
+  PermissionForEventsToInvokeModelPackageStateChange:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ModelPackageStateChangeFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt ModelPackageStateChangeRule.Arn
+
+# Athena Catalog
+  AthenaDataCatalog:
+    Type: 'AWS::Athena::DataCatalog'
+    Properties:
+      Description: Create data catalog entry with athena connector to DynamoDB
+      Name: dynamodb-athena-connector-datasource
+      Type: LAMBDA
+      Parameters:
+        function: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AthenaCatalogName}'
+
+# QuickSight Athena DataSource
+  QuickSightAthenaDataSource:
+    Type: AWS::QuickSight::DataSource
+    Properties:
+      AwsAccountId: !Ref AWS::AccountId
+      DataSourceId: my-athena-ddb-datasource
+      Name: Athena Data Source for DynamoDB
+      Type: ATHENA
+      DataSourceParameters:
+        AthenaParameters:
+          WorkGroup: primary
+      Permissions:
+        - Principal: !Sub arn:aws:quicksight:${AWS::Region}:${AWS::AccountId}:user/default/${QuickSightUserName}
+          Actions:
+            - quicksight:UpdateDataSourcePermissions
+            - quicksight:DescribeDataSource
+            - quicksight:DescribeDataSourcePermissions
+            - quicksight:PassDataSource
+            - quicksight:UpdateDataSource
+            - quicksight:DeleteDataSource
+      SslProperties:
+        DisableSsl: false
+      # Tags:
+        # - Key: Environment
+          # Value: Production
+
+  ModelPackageStateChangesTableQuicksightDataset:
+    Type: AWS::QuickSight::DataSet
+    DependsOn: QuickSightAthenaDataSource
+    Properties: 
+      AwsAccountId: !Ref 'AWS::AccountId'
+      DataSetId: Model-Package-State-Changes-Table-Quicksight-Dataset
+      Name: Model-Package-State-Changes-Table-Quicksight-Dataset
+      ImportMode: DIRECT_QUERY
+      Permissions: 
+        - Principal: !Sub arn:aws:quicksight:${AWS::Region}:${AWS::AccountId}:user/default/${QuickSightUserName}
+          Actions:
+            - quicksight:DeleteDataSet
+            - quicksight:CreateIngestion
+            - quicksight:CancelIngestion
+            - quicksight:DescribeDataSet
+            - quicksight:DescribeDataSetPermissions
+            - quicksight:PassDataSet
+            - quicksight:DescribeIngestion
+            - quicksight:ListIngestions
+            - quicksight:UpdateDataSetPermissions
+            - quicksight:UpdateDataSet
+      PhysicalTableMap:
+        SourceTable:
+          RelationalTable:
+            DataSourceArn: !GetAtt QuickSightAthenaDataSource.Arn
+            Catalog: !Ref AthenaDataCatalog
+            Schema: "default"
+            Name: !Ref ModelPackageStateChangesTable
+            InputColumns:
+            - Name: modelpackagearn
+              Type: STRING
+            - Name: eventtime
+              Type: STRING
+            - Name: creationtime
+              Type: STRING
+            - Name: usecaseid
+              Type: STRING
+            - Name: usecasename
+              Type: DECIMAL
+            - Name: usecasestage
+              Type: STRING
+            - Name: modelpackagegroupname
+              Type: STRING
+            - Name: modelpackageversion
+              Type: STRING
+            - Name: modelowner
+              Type: STRING
+            - Name: modellob
+              Type: STRING
+            - Name: modelproject
+              Type: STRING
+            - Name: modelstage
+              Type: STRING
+            - Name: modelstatus
+              Type: STRING
+            - Name: modelrisk
+              Type: STRING
+            - Name: modelvalidationmetrics
+              Type: STRING
+            - Name: modelmonitormetrics
+              Type: STRING
+            - Name: modelaudittimestamp
+              Type: STRING
+            - Name: source
+              Type: STRING
+            - Name: region
+              Type: STRING
+            - Name: account
+              Type: STRING
+      LogicalTableMap:
+        LogicalTable:
+          Alias: MyLogicalTable
+          Source:
+            PhysicalTableId: SourceTable
+
+# Update QuickSight Policy
+  InvokeFunctionInlinePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: InvokeFunctionInlinePolicy
+      RoleName: aws-quicksight-service-role-v0
+      PolicyDocument: 
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'lambda:InvokeFunction'
+            Resource: 
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AthenaCatalogName}
+
+  SpillBucketInlinePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: SpillBucketInlinePolicy
+      RoleName: aws-quicksight-service-role-v0
+      PolicyDocument: 
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:ListBucket'
+              - 's3:GetBucketLocation'
+              - 's3:GetObjectVersion'
+            Resource: 
+              - Fn::Sub:
+                - arn:${AWS::Partition}:s3:::${bucketName}
+                - bucketName:
+                    Ref: S3Bucket
+              - Fn::Sub:
+                - arn:${AWS::Partition}:s3:::${bucketName}/*
+                - bucketName:
+                    Ref: S3Bucket
+
+
+Outputs:
+  MetricsCollectorFunctionArn:
+    Description: "ARN of the Metrics Collector Lambda function"
+    Value: !GetAtt MetricsCollectorFunction.Arn
+  ModelPackageStateChangeFunctionArn:
+    Description: "ARN of the Model Package State Change Lambda function"
+    Value: !GetAtt ModelPackageStateChangeFunction.Arn
+  MetricsCollectorRuleArn:
+    Description: "ARN of the Metrics Collector EventBridge rule"
+    Value: !GetAtt MetricsCollectorRule.Arn
+  ModelPackageStateChangeRuleArn:
+    Description: "ARN of the ModelPackage State Change Rule"
+    Value: !GetAtt ModelPackageStateChangeRule.Arn
+    

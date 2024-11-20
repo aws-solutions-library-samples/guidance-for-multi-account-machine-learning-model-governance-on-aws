@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for creating SageMaker Domain and User Profile'
+
+# step1b <-- creates SM domain and user profile in Hub Account
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Name of the SageMaker Domain
+  UserProfileName:
+    Type: String
+    Description: Name of the User Profile
+
+Resources:
+  SageMakerDomain:
+    Type: AWS::SageMaker::Domain
+    Properties:
+      DomainName: !Ref DomainName
+      AuthMode: IAM
+      DefaultUserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+      AppNetworkAccessType: PublicInternetOnly
+      VpcId: !Ref SageMakerVPC
+      SubnetIds: 
+        - !Ref SageMakerSubnet
+
+  SageMakerUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties:
+      DomainId: !GetAtt SageMakerDomain.DomainId
+      UserProfileName: !Ref UserProfileName
+      UserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: HubAccountSagemakerExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+
+
+
+  SageMakerVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: SageMaker VPC
+
+  SageMakerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SageMakerVPC
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs 
+          Ref: 'AWS::Region'
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: SageMaker Subnet
+
+Outputs:
+  DomainId:
+    Description: ID of the created SageMaker Domain
+    Value: !GetAtt SageMakerDomain.DomainId
+    Export:
+      Name: SagemakerDomainId
+  UserProfileArn:
+    Description: ARN of the created User Profile
+    Value: !GetAtt SageMakerUserProfile.UserProfileArn
+    Export:
+      Name: SagemakerUserProfileArn
+  SageMakerExecutionRole:
+    Description: Name of the SageMaker Execution Role
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: SageMakerExecutionRole

@@ -1,0 +1,423 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ' Step 2 - Create resources in Data Science Account: SageMaker Studio Domain, User Profile, Jupyter and Mlflow Apps'
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Name of the SageMaker Domain
+  UserProfileName:
+    Type: String
+    Description: Name of the User Profile 
+  HubAccountId:
+    Type: String
+    Description: Account ID of the hub account 
+  HubS3BucketName:
+    Type: String
+    Description: Name of the S3 bucket in the hub account 
+  MlFlowTrackingServerName:
+    Type: String
+    Description: Name of the ml flow tracking server
+
+# Sagemaker execution role
+Resources:
+# Studio domain & User profile 
+  SageMakerDomain:
+    Type: AWS::SageMaker::Domain
+    Properties: 
+      DomainName: !Join ["-", [!Ref DomainName, !Select [0, !Split [ "-", !Select [2, !Split ["/", !Ref AWS::StackId]]]]]]
+      AuthMode: IAM
+      DefaultUserSettings: 
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        StudioWebPortal: ENABLED
+        DefaultLandingUri: 'studio::'
+      DomainSettings:
+        DockerSettings:
+          EnableDockerAccess: ENABLED
+      AppNetworkAccessType: PublicInternetOnly
+      VpcId: !Ref SageMakerVPC
+      SubnetIds: 
+        - !Ref SageMakerSubnet
+
+  SageMakerStudioUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties: 
+      DomainId: !GetAtt SageMakerDomain.DomainId
+      UserProfileName: !Join ["-", [!Ref UserProfileName, !Select [0, !Split [ "-", !Select [2, !Split ["/", !Ref AWS::StackId]]]]]]
+      UserSettings:
+        DefaultLandingUri: 'studio::'
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+
+  StudioS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+        - "-"
+        - - "sagemaker"
+          - !Ref AWS::Region
+          - !Ref AWS::AccountId
+          - !Select [0, !Split [ "-", !Select [2, !Split ["/", !Ref AWS::StackId]]]]
+
+# Lifecycle config lambda to copy over file
+  LifeCycleConfigLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub 'LifeCycleConfigLambdaPolicy-${AWS::StackName}'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:CreateStudioLifecycleConfig'
+                  - 'sagemaker:DeleteStudioLifecycleConfig'
+                Resource: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:studio-lifecycle-config/*'
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:UpdateUserProfile'
+                  - 'sagemaker:DeleteUserProfile'
+                Resource: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:user-profile/*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LifeCycleConfigLambda:
+    DependsOn:
+      - SageMakerStudioUserProfile
+      - JupyterAppSpace
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: Add LifeCycle Configuration to copy workshop files to Studio
+      Handler: index.lambda_handler
+      Role: !GetAtt LifeCycleConfigLambdaRole.Arn
+      Runtime: python3.10
+      Timeout: 60
+      Code:
+        ZipFile: !Join
+          - |+
+
+          - - 'import boto3'
+            - 'import base64'
+            - 'import cfnresponse'
+            - ''
+            - 'client = boto3.client(''sagemaker'')'
+            - 'lcc_up1 = ''\n''.join(('
+            - '    ''#!/bin/bash'','
+            - '    '''','
+            - '    ''set -ex'','
+            - '    '''','
+            - '    ''if [ ! -z "${SM_JOB_DEF_VERSION}" ]'','
+            - '    ''then'','
+            - '    ''   echo "Running in job mode, skip lcc"'','
+            - '    ''else'','
+            - '    ''   git clone https://github.com/aws-samples/genai-ml-platform-examples'','
+            - '    ''   echo "Files cloned from GitHub repo"'','
+            - '    ''fi'','
+            - '    '''','
+            - '))'
+            - ''
+            - !Sub 'lcc_name_up1 = "${AWS::StackName}-clone-repo"'
+            - !Sub 'up1 = "${SageMakerStudioUserProfile}"'
+            - ''
+            - 'def get_lcc_base64_string(lcc_string):'
+            - '    lcc_bytes = lcc_string.encode("ascii")'
+            - '    base64_lcc_bytes = base64.b64encode(lcc_bytes)'
+            - '    base64_lcc_string = base64_lcc_bytes.decode("ascii")'
+            - '    return base64_lcc_string'
+            - ''
+            - ''
+            - 'def apply_lcc_to_user_profile(base64_lcc_string, lcc_config_name, profile):'
+            - '    response = client.create_studio_lifecycle_config('
+            - '        StudioLifecycleConfigName=lcc_config_name,'
+            - '        StudioLifecycleConfigContent=base64_lcc_string,'
+            - '        StudioLifecycleConfigAppType="JupyterLab",'
+            - '   )'
+            - ''
+            - '    lcc_arn = response["StudioLifecycleConfigArn"]'
+            - '    update_up = client.update_user_profile('
+            - '        DomainId=profile.split("|")[1],'
+            - '        UserProfileName=profile.split("|")[0],'
+            - '        UserSettings={'
+            - '            "JupyterLabAppSettings": {'
+            - '                "DefaultResourceSpec": {"LifecycleConfigArn": lcc_arn},'
+            - '                "LifecycleConfigArns": [lcc_arn]'
+            - '            }'
+            - '        }'
+            - '    )'
+            - '    return update_up'
+            - ''
+            - ''
+            - 'def lambda_handler(event, context):'
+            - '    print(event)'
+            - '    try:'
+            - '        base64_lcc_up1_string = get_lcc_base64_string(lcc_up1)'
+            - '        updated_up1 = apply_lcc_to_user_profile('
+            - '            base64_lcc_up1_string,'
+            - '            lcc_name_up1,'
+            - '            up1'
+            - '        )'
+            - '        print("Response User Profile LCC update for UP1")'
+            - '        print(updated_up1)'
+            - ''
+            - '        response_value = 120'
+            - '        response_data = {"Data": response_value}'
+            - '        cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)'
+            - '    except Exception as e:'
+            - '        if "RequestType" in event:'
+            - '            if event["RequestType"] == "Delete":'
+            - '                try:'
+            - '                    response1 = client.delete_studio_lifecycle_config('
+            - '                        StudioLifecycleConfigName=lcc_name_up1'
+            - '                    )'
+            - '                    print(response1)'
+            - '                    response_data = {}'
+            - '                    cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)'
+            - '                    return'
+            - '                except Exception as e2:'
+            - '                    print(e2)'
+            - '                    response_data = e2'
+            - '                    cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)'
+            - '                    return'
+            - '        print(e)'
+            - '        response_data = {"Data": str(e)}'
+            - '        cfnresponse.send(event, context, cfnresponse.FAILED, response_data)'
+
+  LifeCycleConfigLambdaInvoke:
+    DependsOn:
+      - SageMakerStudioUserProfile
+      - SageMakerDomain
+      - JupyterAppSpace
+    Type: AWS::CloudFormation::CustomResource
+    Version: "1.0"
+    Properties:
+      ServiceToken: !GetAtt LifeCycleConfigLambda.Arn
+
+
+# Jupyter App and ML flow
+  JupyterAppSpace:
+    DependsOn:
+      - SageMakerStudioUserProfile
+      - SageMakerDomain
+    Type: AWS::SageMaker::Space
+    Properties:
+      DomainId: !GetAtt SageMakerDomain.DomainId
+      OwnershipSettings:
+        OwnerUserProfileName: !Select [2, !Split ["/", !GetAtt SageMakerStudioUserProfile.UserProfileArn ]]
+      SpaceDisplayName: sagemaker-space
+      SpaceName: sagemaker-space
+      SpaceSettings:
+        AppType: JupyterLab
+        JupyterLabAppSettings:
+          CodeRepositories: 
+            - RepositoryUrl: https://github.com/aws-samples/amazon-sagemaker-from-idea-to-production.git
+          DefaultResourceSpec:
+            InstanceType: ml.t3.large
+        SpaceStorageSettings:
+          EbsStorageSettings:
+            EbsVolumeSizeInGb: 50
+      SpaceSharingSettings:
+        SharingType: Private
+    
+  SageMakerMlFlowServer:
+    DependsOn:
+      - SageMakerStudioUserProfile
+      - SageMakerDomain
+    Type: AWS::SageMaker::MlflowTrackingServer
+    Properties:
+      ArtifactStoreUri: !Sub 's3://${StudioS3Bucket}/mlflow/${SageMakerDomain.DomainId}'
+      AutomaticModelRegistration: False
+      RoleArn: !GetAtt SageMakerExecutionRole.Arn
+      TrackingServerName: !Ref MlFlowTrackingServerName
+
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: "The resources are scoped down to all the resources within the account since there can be multiple resources that sagemaker execution roles needs permission to train and register the model"
+    Properties:
+      RoleName: DevSpokeAccountSagemakerExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: "sagemaker-mlflow-permissions"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sagemaker:CreateMlflowTrackingServer"
+                  - "sagemaker:UpdateMlflowTrackingServer"
+                  - "sagemaker:DeleteMlflowTrackingServer"
+                  - "sagemaker:StartMlflowTrackingServer"
+                  - "sagemaker:StopMlflowTrackingServer"
+                  - "sagemaker:CreatePresignedMlflowTrackingServerUrl"
+                  - "sagemaker-mlflow:GetLatestModelVersions"
+                  - "sagemaker-mlflow:ListArtifacts"
+                  - "sagemaker-mlflow:AccessUI"
+                  - "sagemaker-mlflow:GetDownloadURIForModelVersionArtifacts"
+                  - "sagemaker-mlflow:GetExperiment"
+                  - "sagemaker-mlflow:GetExperimentByName"
+                  - "sagemaker-mlflow:GetMetricHistory"
+                  - "sagemaker-mlflow:GetModelVersion"
+                  - "sagemaker-mlflow:GetModelVersionByAlias"
+                  - "sagemaker-mlflow:GetRegisteredModel"
+                  - "sagemaker-mlflow:GetRun"
+                  - "sagemaker-mlflow:GetTraceInfo"
+                  - "sagemaker-mlflow:SearchExperiments"
+                  - "sagemaker-mlflow:SearchModelVersions"
+                  - "sagemaker-mlflow:SearchRegisteredModels"
+                  - "sagemaker-mlflow:SearchRuns"
+                  - "sagemaker-mlflow:SearchTraces"
+                  - "sagemaker-mlflow:CreateExperiment"
+                  - "sagemaker-mlflow:CreateModelVersion"
+                  - "sagemaker-mlflow:CreateRegisteredModel"
+                  - "sagemaker-mlflow:CreateRun"
+                  - "sagemaker-mlflow:DeleteExperiment"
+                  - "sagemaker-mlflow:DeleteModelVersion"
+                  - "sagemaker-mlflow:DeleteModelVersionTag"
+                  - "sagemaker-mlflow:DeleteRegisteredModel"
+                  - "sagemaker-mlflow:DeleteRegisteredModelAlias"
+                  - "sagemaker-mlflow:DeleteRegisteredModelTag"
+                  - "sagemaker-mlflow:DeleteRun"
+                  - "sagemaker-mlflow:DeleteTag"
+                  - "sagemaker-mlflow:DeleteTraces"
+                  - "sagemaker-mlflow:DeleteTraceTag"
+                  - "sagemaker-mlflow:EndTrace"
+                  - "sagemaker-mlflow:LogBatch"
+                  - "sagemaker-mlflow:LogInputs"
+                  - "sagemaker-mlflow:LogMetric"
+                  - "sagemaker-mlflow:LogModel"
+                  - "sagemaker-mlflow:LogParam"
+                  - "sagemaker-mlflow:RenameRegisteredModel"
+                  - "sagemaker-mlflow:RestoreExperiment"
+                  - "sagemaker-mlflow:RestoreRun"
+                  - "sagemaker-mlflow:SetExperimentTag"
+                  - "sagemaker-mlflow:SetModelVersionTag"
+                  - "sagemaker-mlflow:SetRegisteredModelAlias"
+                  - "sagemaker-mlflow:SetRegisteredModelTag"
+                  - "sagemaker-mlflow:SetTag"
+                  - "sagemaker-mlflow:SetTraceTag"
+                  - "sagemaker-mlflow:StartTrace"
+                  - "sagemaker-mlflow:TransitionModelVersionStage"
+                  - "sagemaker-mlflow:UpdateExperiment"
+                  - "sagemaker-mlflow:UpdateModelVersion"
+                  - "sagemaker-mlflow:UpdateRegisteredModel"
+                  - "sagemaker-mlflow:UpdateRun"
+                Resource: "*"
+        - PolicyName: "ram-resource-permissions"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ram:GetPermission"
+                  - "ram:ListPermissions"
+                  - "ram:GetResourceShareAssociations"
+                  - "ram:ListResourceSharePermissions"
+                  - "ram:DeleteResourceShare"
+                  - "ram:GetResourceShareInvitations"
+                  - "ram:AcceptResourceShareInvitation"
+                Resource:
+                  - !Sub "arn:aws:ram:${AWS::Region}:${AWS::AccountId}:resource-share/*"
+                  - !Sub "arn:aws:ram:${AWS::Region}:${AWS::AccountId}:resource-share-invitation/*"
+
+
+        - PolicyName: "cross-account-s3-permissions"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:ListBucket"
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                  - "s3:DeleteObject"
+                  - "s3:CreateBucket"
+                  - "s3:DeleteBucket"
+                Resource:
+                  - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${HubAccountId}-${HubS3BucketName}'
+                  - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${HubAccountId}-${HubS3BucketName}/*'
+        - PolicyName: "general-permissions"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:DescribeDomain
+                  - sagemaker:DescribeUserProfile
+                  - sagemaker:DescribeSpace
+                  - sagemaker:DescribeStudioLifecycleConfig
+                  - sagemaker:DescribeImageVersion
+                  - sagemaker:DescribeAppImageConfig
+                  - sagemaker:CreateTrainingJob
+                  - sagemaker:DescribeTrainingJob
+                  - sagemaker:StopTrainingJob
+                  - sagemaker:Search
+                  - sagemaker:CreatePipeline
+                  - sagemaker:DescribePipeline
+                  - sagemaker:DeletePipeline
+                  - sagemaker:StartPipelineExecution
+                Resource: "*"
+
+
+# create vpc, subnet, s3 bucket
+  SageMakerVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: SageMaker VPC
+
+  SageMakerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SageMakerVPC
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs 
+          Ref: 'AWS::Region'
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: SageMaker Subnet
+
+Outputs:
+  DomainId:
+    Description: ID of the created SageMaker Domain
+    Value: !GetAtt SageMakerDomain.DomainId
+    Export:
+      Name: SageMakerStudioDomainId
+  UserProfileArn:
+    Description: ARN of the created User Profile
+    Value: !GetAtt SageMakerStudioUserProfile.UserProfileArn
+    Export:
+      Name: SageMakerStudioUserProfile
+  DevSpokeSageMakerExecutionRole:
+    Description: Name of the SageMaker Execution Role
+    Value: DevSpokeAccountSagemakerExecutionRole
+    Export:
+      Name: DevSpokeSageMakerExecutionRole

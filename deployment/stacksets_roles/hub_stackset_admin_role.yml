@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Run this file in the hub account (must be either Organizations management account or delegated administator account) 
+  Configure the AWSCloudFormationStackSetAdministrationRole to enable use of AWS CloudFormation StackSets.
+
+Parameters:
+  AdministrationRoleName:
+    Type: String
+    Default: AWSCloudFormationStackSetAdministrationRole
+    Description: "The name of the administration role. Defaults to 'AWSCloudFormationStackSetAdministrationRole'."
+  ExecutionRoleName:
+    Type: String
+    Default: AWSCloudFormationStackSetExecutionRole
+    Description: "The name of the execution role that can assume this role. Defaults to 'AWSCloudFormationStackSetExecutionRole'."
+
+Resources:
+  AdministrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref AdministrationRoleName
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: AssumeRole-AWSCloudFormationStackSetExecutionRole
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:*:iam::*:role/${ExecutionRoleName}'

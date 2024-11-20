@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template to create a SageMaker Model Package Group and share it using AWS RAM in Hub Acccount'
+
+# Creates Model Pkg group and shares it through RAM . Creates S3 bucket where model artifacts will be stored. S3 bucket has cross-account 
+# permission. dev and deployment account should be able to write to this S3 bucket. 
+Parameters:
+  ModelPackageGroupName:
+    Type: String
+    Description: Name of the SageMaker Model Package Group
+    Default: ModelCreditRisk
+
+  HubS3BucketName:
+    Type: String
+    Description: Name of the S3 bucket in the Hub account to store the model artifacts
+    
+  DevSpokeId:
+    Type: String
+    Description: AWS account ID of Dev account to which model package is shared
+
+  TestSpokeId:
+    Type: String
+    Description: AWS account ID of Test account to which model package is shared
+
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'sagemaker-${AWS::Region}-${AWS::AccountId}-${HubS3BucketName}'
+      AccessControl: Private
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      VersioningConfiguration:
+        Status: Enabled
+      
+  ModelPackageGroup:
+    Type: AWS::SageMaker::ModelPackageGroup
+    Properties:
+      ModelPackageGroupName: !Ref ModelPackageGroupName
+      ModelPackageGroupDescription: 'Model Package Group created by CloudFormation'
+
+  ResourceShare:
+    Type: AWS::RAM::ResourceShare
+    Properties:
+      Name: !Sub '${ModelPackageGroupName}-share'
+      AllowExternalPrincipals: true
+      Principals: 
+        - !Ref DevSpokeId
+        - !Ref TestSpokeId
+      ResourceArns: 
+        - !Sub '${ModelPackageGroup}'
+      PermissionArns:
+        - !GetAtt CustomPermission.Arn
+
+  CustomPermission:
+    Type: AWS::RAM::Permission
+    Properties:
+      Name: 'ResourceShareCustomPermissions'
+      ResourceType: 'sagemaker:ModelPackageGroup'
+      PolicyTemplate:
+        {
+          "Effect": "Allow",
+           "Action": [
+              "sagemaker:DescribeModelPackageGroup",
+              "sagemaker:DescribeModelPackage",
+              "sagemaker:ListModelPackages",
+              "sagemaker:UpdateModelPackage",
+              "sagemaker:DeleteModelPackage",
+              "sagemaker:CreateModelPackage",
+              "sagemaker:CreateModel"
+
+            ]           
+        }
+
+
+Outputs:
+  ModelPackageGroupArn:
+    Description: ARN of the created Model Package Group
+    Value: !Sub '${ModelPackageGroup}'
+    Export:
+      Name: ModelPackageGroupArn
+  ResourceShareArn:
+    Description: ARN of the Resource Share
+    Value: !Ref ResourceShare
+    Export:
+      Name: ResourceShareArn
+  SagemakerBucketName:
+    Description: Name of the S3 bucket
+    Value: !Sub 'sagemaker-${AWS::Region}-${AWS::AccountId}-${HubS3BucketName}'
+    Export:
+      Name: SagemakerBucketName
+

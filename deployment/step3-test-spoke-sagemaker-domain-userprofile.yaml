@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for creating SageMaker Domain and User Profile in Hub Account'
+
+# Step 1d: CFN for creating SM domain, user-profile in test account 
+# The SM execution role has permission to access S3 bucket in hub account
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Name of the SageMaker Domain
+  UserProfileName:
+    Type: String
+    Description: Name of the User Profile
+    # todo: get it through variables from stackset later. 
+    # For now for easiness, take hub accountid and buh S3 bucket where modek artifacts are stored as paramss
+  HubAccountId:
+    Type: String
+    Description: Account ID of the hub account 
+  HubS3BucketName:
+    Type: String
+    Description: Name of the S3 bucket in the hub account 
+
+Resources:
+  
+  SageMakerDomain:
+    Type: AWS::SageMaker::Domain
+    Properties:
+      DomainName: !Ref DomainName
+      AuthMode: IAM
+      DefaultUserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+      AppNetworkAccessType: PublicInternetOnly
+      VpcId: !Ref SageMakerVPC
+      SubnetIds: 
+        - !Ref SageMakerSubnet
+
+  SageMakerUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties:
+      DomainId: !GetAtt SageMakerDomain.DomainId
+      UserProfileName: !Ref UserProfileName
+      UserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+
+  JupyterAppSpace:
+    DependsOn:
+      - SageMakerUserProfile
+      - SageMakerDomain
+    Type: AWS::SageMaker::Space
+    Properties:
+      DomainId: !GetAtt SageMakerDomain.DomainId
+      OwnershipSettings:
+        OwnerUserProfileName: !Select [2, !Split ["/", !GetAtt SageMakerUserProfile.UserProfileArn ]]
+      SpaceDisplayName: sagemaker-space
+      SpaceName: sagemaker-space
+      SpaceSettings:
+        AppType: JupyterLab
+        JupyterLabAppSettings:
+          # CodeRepositories: 
+            # - RepositoryUrl: https://github.com/aws-samples/amazon-sagemaker-from-idea-to-production.git
+          DefaultResourceSpec:
+            InstanceType: ml.t3.large
+        SpaceStorageSettings:
+          EbsStorageSettings:
+            EbsVolumeSizeInGb: 50
+      SpaceSharingSettings:
+        SharingType: Private
+    
+
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: TestSpokeAccountSagemakerExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: "ram-resource-permissions"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ram:GetPermission"
+                  - "ram:ListPermissions"
+                  - "ram:GetResourceShareAssociations"
+                  - "ram:ListResourceSharePermissions"
+                  - "ram:DeleteResourceShare"
+                  - "ram:GetResourceShareInvitations"
+                  - "ram:AcceptResourceShareInvitation"
+                Resource: 
+                  - !Sub "arn:aws:ram:${AWS::Region}:${AWS::AccountId}:resource-share/*"
+                  - !Sub "arn:aws:ram:${AWS::Region}:${AWS::AccountId}:resource-share-invitation/*"
+                  - !Sub "arn:aws:ram::${AWS::AccountId}:permission/*"
+                  - !Sub "arn:aws:ram:${AWS::Region}:${AWS::AccountId}:permission/*"
+        - PolicyName: "cross-account-s3-permissions"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:ListBucket"
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                Resource:
+                  - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${HubAccountId}-${HubS3BucketName}'
+                  - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${HubAccountId}-${HubS3BucketName}/*'
+
+
+  SageMakerVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: SageMaker VPC
+
+  SageMakerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SageMakerVPC
+      AvailabilityZone: !Select 
+        - 0
+        - !GetAZs 
+          Ref: 'AWS::Region'
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: SageMaker Subnet
+
+
+
+# API Gateway and Lambda resources to invoke Sagemaker model endpoint
+  # Lambda Function
+  InvokeModelEndpointLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: InvokeModelEndpointLambda
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code: # placeholder code for now, change it to call sagemaker endpoint
+        ZipFile: |
+          import json
+
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Hello from Python Lambda!') 
+              }
+      Runtime: python3.9
+
+  # IAM Role for Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # API Gateway
+  InvokeModelEndpointApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: InvokeModelEndpointApiGateway
+      Description: API Gateway for invoking Lambda function
+
+  # API Gateway Resource
+  InvokeModelEndpointApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref InvokeModelEndpointApiGateway
+      ParentId: !GetAtt InvokeModelEndpointApiGateway.RootResourceId
+      PathPart: 'myresource'
+
+  # API Gateway Method
+  InvokeModelEndpointApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref InvokeModelEndpointApiGateway
+      ResourceId: !Ref InvokeModelEndpointApiResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - LambdaArn: !GetAtt InvokeModelEndpointLambda.Arn
+
+  # API Gateway Deployment
+  MyApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: InvokeModelEndpointApiMethod
+    Properties:
+      RestApiId: !Ref InvokeModelEndpointApiGateway
+      StageName: prod
+
+  # Lambda Permission for API Gateway
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref InvokeModelEndpointLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${InvokeModelEndpointApiGateway}/*/GET/myresource
+
+Outputs:
+  DomainId:
+    Description: ID of the created SageMaker Domain
+    Value: !GetAtt SageMakerDomain.DomainId
+    Export:
+      Name: SagemakerDomainId
+  UserProfileArn:
+    Description: ARN of the created User Profile
+    Value: !GetAtt SageMakerUserProfile.UserProfileArn
+    Export:
+      Name: SagemakerUserProfileArn
+  TestSpokeSageMakerExecutionRole:
+    Description: Name of the SageMaker Execution Role
+    Value: TestSpokeAccountSagemakerExecutionRole
+    Export:
+      Name: TestSpokeSageMakerExecutionRole
+  ApiGatewayUrl:
+    Description: URL of the API Gateway endpoint
+    Value: !Sub https://${InvokeModelEndpointApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/myresource

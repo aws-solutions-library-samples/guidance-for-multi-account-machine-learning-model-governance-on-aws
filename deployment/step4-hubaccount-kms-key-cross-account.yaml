@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: "CloudFormation template to create a KMS key with specific IAM role permissions"
+
+Parameters:
+  DevSpokeAccountSageMakerRoleName:
+    Type: String
+    Description: IAM SageMaker Role name in the Development Spoke Account
+    Default: 'DevSpokeAccountSagemakerExecutionRole'
+  TestSpokeAccountSageMakerRoleName:
+    Type: String
+    Description: IAM SageMaker Role name in the Test Spoke Account
+    Default: 'TestSpokeAccountSagemakerExecutionRole'
+  DevSpokeId:
+    Type: String
+    Description: AWS account ID of Development account to which model package is shared
+  TestSpokeId:
+    Type: String
+    Description: AWS account ID of Test account to which model package is shared
+  HubS3BucketName:
+    Type: String
+    Description: Name of the S3 bucket in the Hub account to store the model artifacts, this step will add the required bucket policy
+
+Resources:
+  MyKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for encrypting sensitive data
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: key-default-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow SageMaker Execution Role
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub 'arn:aws:iam::${DevSpokeId}:role/${DevSpokeAccountSageMakerRoleName}'
+                - !Sub 'arn:aws:iam::${TestSpokeId}:role/${TestSpokeAccountSageMakerRoleName}'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+              - kms:CreateGrant
+            Resource: '*'
+      EnableKeyRotation: true
+      KeyUsage: ENCRYPT_DECRYPT
+      KeySpec: SYMMETRIC_DEFAULT
+      PendingWindowInDays: 7
+      Tags:
+        - Key: Purpose
+          Value: DataEncryption
+
+  MyKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/my-encryption-key
+      TargetKeyId: !Ref MyKMSKey
+
+  CrossAccountAccesstoHubBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Sub 'sagemaker-${AWS::Region}-${AWS::AccountId}-${HubS3BucketName}'
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCrossAccountAccess
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub 'arn:aws:iam::${DevSpokeId}:role/${DevSpokeAccountSageMakerRoleName}'
+                - !Sub 'arn:aws:iam::${TestSpokeId}:role/${TestSpokeAccountSageMakerRoleName}'
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:role/HubAccountSagemakerExecutionRole' # need this permission for testing purposes - to deploy in hub account               
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:ListBucket'
+            Resource: 
+              - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}-${HubS3BucketName}'
+              - !Sub 'arn:aws:s3:::sagemaker-${AWS::Region}-${AWS::AccountId}-${HubS3BucketName}/*'
+
+Outputs:
+  KMSKeyId:
+    Description: KMS Key ID
+    Value: !Ref MyKMSKey
+  KMSKeyArn:
+    Description: KMS Key ARN
+    Value: !GetAtt MyKMSKey.Arn
+  KMSKeyAlias:
+    Description: KMS Key Alias
+    Value: !Ref MyKMSKeyAlias
