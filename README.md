@@ -1,4 +1,4 @@
-# Use Case and Model Lifecycle Governance with SageMaker Model Registry resource sharing
+# Guidance for Multi-Account Machine Learning (ML) Model Governance on AWS
 
 ## Table of Contents
 
