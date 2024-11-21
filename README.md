@@ -99,7 +99,7 @@ Required packages:
    ![step1b](assets/CFNsteps/Step1b-hubAccount.PNG)
 
 - Finally, remaining in the shared services / hub account, upload the file named [step1c-hubaccount-model-governance-resources.yaml](deployment/step1c-hubaccount-model-governance-resources.yaml) to Cloudformation in the console. Alternatively you can use the [CLI commands](https://docs.aws.amazon.com/cli/latest/reference/cloudformation/deploy/#examples).
-   - Create the Amazon QuickSight instance
+   - Create the Amazon QuickSight instance. Please make sure the appropriate permissions are given. ![Security and Permissions](assets/qsightperms.gif)
    - The template takes 10 input parameters:
       - 7 required: **AthenaCatalogName** (the name of the lambda function that will be created to query DynamoDb via Athena), S3 bucket **SpillBucket** (service bucket for Athena queries), **SpillPrefix** (prefix within SpillBucket to spill data from Athena queries),   **DisableSpillEncryption** (if set to `true` the encryption for spilled data is disabled), **LambdaTimeout** ( Lambda invocation runtime in seconds), **LambdaMemory** (Lambda memory in MB),   **QuickSightUserName** (The QuickSight username that to be used to create the Datasources and Datasets, it can be retrieved with the command `aws quicksight list-users --aws-account-id YOUR_AWS_ACCOUNT_ID --namespace default`)
       - 3 optional: **LambdaRole** (a custom, existing IAM role to be used by the Connector Lambda), **KMSKeyId** (use existing KMS Key instead of AES-GCM to encrypt the spilled data by Athena queries), **PermissionsBoundaryARN** (IAM policy ARN to use as the PermissionsBoundary for
