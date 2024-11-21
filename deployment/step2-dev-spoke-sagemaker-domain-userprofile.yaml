@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ' Step 2 - Create resources in Data Science Account: SageMaker Studio Domain, User Profile, Jupyter and Mlflow Apps'
+Description: 'SO9561- Step 2 - Create resources in Data Science Account: SageMaker Studio Domain, User Profile, Jupyter and Mlflow Apps'
 
 Parameters:
   DomainName:
