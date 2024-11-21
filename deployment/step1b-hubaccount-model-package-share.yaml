@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CloudFormation template to create a SageMaker Model Package Group and share it using AWS RAM in Hub Acccount'
+Description: 'SO9561 -CloudFormation template to create a SageMaker Model Package Group and share it using AWS RAM in Hub Acccount'
 
 # Creates Model Pkg group and shares it through RAM . Creates S3 bucket where model artifacts will be stored. S3 bucket has cross-account 
 # permission. dev and deployment account should be able to write to this S3 bucket. 
