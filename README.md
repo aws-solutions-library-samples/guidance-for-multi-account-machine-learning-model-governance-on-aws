@@ -182,11 +182,12 @@ In the shared services account, review and approve the registered model from the
 
    ![modelapproval](assets/modelapproval2.png)
 
-3. Deploy the shared model, once approved, to the test account using JupyterLab notebook below.
-You will need the following information handy to run the JupyterLab [provided example notebook](source/deploy-shared-model.ipynb).![JupyterLab](assets/openjupyterlab.png)
+3. You will need the following information handy while running the notebook.
 - 1.Hub / Shared Account ID
 - 2.KMS Key id deployed in the Hub account (not the entire Arn)
-- 3. S3 bucket name created in the Hub account (The template HubS3BucketName parameter value)
+- 3.S3 bucket name created in the Hub account (The template HubS3BucketName parameter value)
+
+Deploy the shared model, once approved, to the test account using JupyterLab notebook below.JupyterLab [provided example notebook](source/deploy-shared-model.ipynb).![JupyterLab](assets/openjupyterlab.png)
 
 5. Build an Amazon QuickSight dashboard to monitor model lifecycle statuses in the hub account. You can find an [example Amazon QuickSight dashboard for Model Governance here](assets/quicksight/README.md)
 
