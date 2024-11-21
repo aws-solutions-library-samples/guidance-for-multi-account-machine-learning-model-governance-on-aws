@@ -133,6 +133,7 @@ Required packages:
 4. Next steps require to deploy CloudFormation templates in all the accounts to write and read the same files on S3 from multiple accounts through a common KMS Key (cfr [this AWS documentation](https://docs.aws.amazon.com/kms/latest/developerguide/key-policy-modifying-external-accounts.html)). The S3 bucket created in the Hub account during step 1b will also have its bucket policy updated allowing the test and development accounts to read and write from and to the bucket. 
 
 - First, go to the **Hub account** and use the template [step4-hubaccount-kms-key-cross-account.yaml](deployment/step4-hubaccount-kms-key-cross-account.yaml) to deploy the KMS key.
+** KMS Key Cross Account Access **
 ![KMS Key Cross Account](assets/kmsid.png)
 - After deploying the KMS key, the SageMaker User Role in the Dev and Test Accounts need to be updated as well. You can use the StackSets from the shared account or go to the respective accounts to deploy the [step5-dev-spoke-kms-key-policy.yaml](deployment/step5-dev-spoke-kms-key-policy.yaml) template in the development account and the [step6-test-spoke-kms-key-policy.yaml](deployment/step6-test-spoke-kms-key-policy.yaml) template in the test account.
 
