@@ -180,7 +180,7 @@ In the shared services account, review and approve the registered model from the
 
    ![modelapproval](assets/modelapproval2.png)
 
-3. Deploy the shared model, once approved, to the test account using JupyterLab [provided example notebook](source/deploy-shared-model.ipynb).
+3. Deploy the shared model, once approved, to the test account using JupyterLab [provided example notebook](source/deploy-shared-model.ipynb).![JupyterLab](assets/openjupyterlab.png)
 
 4. Build an Amazon QuickSight dashboard to monitor model lifecycle statuses in the hub account. You can find an [example Amazon QuickSight dashboard for Model Governance here](assets/quicksight/README.md)
 
