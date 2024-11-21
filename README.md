@@ -2,7 +2,7 @@
 
 ## Table of Contents
 
-1. [Overview](## Overview)
+1. [Overview](#overview)
     - [Cost](#cost)
 2. [Prerequisites](#prerequisites-required)
     - [Operating System](#operating-system-required)
@@ -14,7 +14,7 @@
 8. [FAQ, known issues, additional considerations, and limitations](#faq-known-issues-additional-considerations-and-limitations-optional)
 9. [Authors](#authors-optional)
 
-Overview 
+## Overview 
 
 This guidance demonstrates how to centralize use case and model governance functions in a multi-account environment using the new model group sharing feature of SageMaker model registry. It provides an architecture for setting up central use case/model governance and walks through the steps involved in building that architecture.
 
