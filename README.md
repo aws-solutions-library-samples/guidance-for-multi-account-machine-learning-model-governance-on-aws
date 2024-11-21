@@ -134,6 +134,7 @@ Required packages:
 - First, go to the **Hub account** and use the template [step4-hubaccount-kms-key-cross-account.yaml](deployment/step4-hubaccount-kms-key-cross-account.yaml) to deploy the KMS key.
 
 - After deploying the KMS key, the SageMaker User Role in the Dev and Test Accounts need to be updated as well. You can use the StackSets from the shared account or go to the respective accounts to deploy the [step5-dev-spoke-kms-key-policy.yaml](deployment/step5-dev-spoke-kms-key-policy.yaml) template in the development account and the [step6-test-spoke-kms-key-policy.yaml](deployment/step6-test-spoke-kms-key-policy.yaml) template in the test account.
+![KMS](assets/kmsid.png)
 
 ### Deployment Validation 
 
