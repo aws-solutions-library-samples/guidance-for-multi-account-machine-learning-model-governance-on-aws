@@ -85,13 +85,13 @@ Required packages:
 2. For the next steps, use the cloudformation yaml templates in the [deployment folder](deployment/). All cloudformation templates takes inputs from the user, please be mindful of the names you use to create resources. The templates can be uploaded to Cloudformation using the AWS console. Alternatively you can use the [CLI commands](https://docs.aws.amazon.com/cli/latest/reference/cloudformation/deploy/#examples).
 
 - Go to the shared services / hub AWS account. Upload the file named [step1a-hub-sagemaker-domain-userprofile.yaml](deployment/step1a-hub-sagemaker-domain-userprofile.yaml) 
-   - The template takes 2 parameters as input - Sagemaker domain name and a userprofile.
+   - The template takes 2 parameters as input - Sagemaker domain name(any text) and a userprofile name(any text).
    - This creates a Sagemaker domain and a userprofile for using the rest of the guidance. 
 
    ![step1a](./assets/CFNsteps/step1a-HubAccount.PNG)
 
 - Still in the shared services / hub account, upload the file named [step1b-hubaccount-model-package-share.yaml](deployment/step1b-hubaccount-model-package-share.yaml) to Cloudformation in the console. Alternatively you can use the [CLI commands](https://docs.aws.amazon.com/cli/latest/reference/cloudformation/deploy/#examples).
-   - The template takes 4 input parameters - a model package group name (stores model versions), S3 bucket name (stores model artifacts) , development AWS Account Id and test AWS Account Id.
+   - The template takes 4 input parameters - a model package group name (stores model versions)(any text), S3 bucket name (stores model artifacts)(any text), development AWS Account Id and test AWS Account Id.
    - We provide a default for the model package group (i.e. `ModelCreditRisk`) for consistency with the provided example notebook to test the guidance, but it can be changed as required.
    - This creates a model package group in the shared services / hub account. This model package group is registered to Resource Access Manager (RAM) as a shared service. An S3 bucket is also created where model artifacts after training in development account will be stored. The S3 bucket has a bucket policy attched allowing cross-account access on it - development and test account's SAGEMAKER_EXECUTION_ROLE is able to write to this S3 bucket.  
    - After the creation of resources, using the AWS console navigate to Resource Access Manager service, and you should now see the model package group created in the last step shared with development and test spoke accounts. 
@@ -116,7 +116,7 @@ Required packages:
 - First, you need to accept shared resource invitations in Resource Access Manager in the development and test accounts. You can use the AWS console to accept the invitation in Resource Access Manager, or the [CLI commands](https://docs.aws.amazon.com/ram/latest/userguide/working-with-shared-invitations.html).
 
 - Next, use the StackSet from the shared account or go to your **development** account. Upload the file named [step2-dev-spoke-sagemaker-domain-userprofile.yaml](deployment/step2-dev-spoke-sagemaker-domain-userprofile.yaml) in Cloudformation. *Note: This deployment takes about 30 minutes. You can move onto the next step before this deployment completed successfully.*
-   - The template takes 6 input parameters - SageMaker domain name, userprofile name, Hub AWS account Id (shared services account), Hub S3 Bucket name (bucket where model artifacts are stored in Hub account),  MLflow Server name and a bucket for MLflow server artifacts. 
+   - The template takes 6 input parameters (give valid text) - SageMaker domain name (any text), userprofile name (any text), Hub AWS account Id (shared services account), Hub S3 Bucket name (bucket where model artifacts are stored in Hub account), MLflow Server name (any text) and a bucket for MLflow server artifacts.
    - This creates a SageMaker domain, userprofile and a MLflow server in the development account. A SAGEMAKER_EXECUTION_ROLE is also created as part of the stack. This role has permissions to upload model artifacts to Hub account. It also has permissions to access RAM resources shared with this AWS account. Once the resources are created, navigate to IAM roles and search for DevSpokeAccountSagemakerExecutionRole. You will see the custom permissions added to this sagemaker execution role.
 
    ![step2](./assets/CFNsteps/Step2DevAccount.PNG)
@@ -139,7 +139,7 @@ Required packages:
 
 5. Verify that the model package group is created in the shared services account. You can use the Amazon SageMaker console or the AWS CLI command:
    ```
-   aws sagemaker describe-model-package-group --model-package-group-name credit-risk-models
+   aws sagemaker describe-model-package-group --model-package-group-name <ModelPackageGroupName-from-step1b>
    ```
 
 6. In the development account, verify that the shared model package group is accessible. Again, you can use the Amazon SageMaker console or the AWS CLI command from the development account itself:
@@ -149,24 +149,40 @@ Required packages:
 
 7. Verify that the MLflow tracking server is running in the development account. You can use the Amazon SageMaker console or the AWS CLI command from the development account itself:
    ```
-   aws sagemaker describe-mlflow-tracking-server --tracking-server-name credit-risk-mlflow
+   aws sagemaker describe-mlflow-tracking-server --tracking-server-name <MlFlowTrackingServerName-from-step2>
    ```
 
 
 ## Running the Guidance
 
-1. In the development account, use the [provided example notebook](source/sm-mlflow_model_registry_register_model_shared_model_group.ipynb) to:
+   #### UCI Machine Learning Repository Data Usage Disclaimer
+
+   The dataset used in the notebook is downloaded from http://archive.ics.uci.edu/ml/datasets/Statlog+%28German+Credit+Data%29;
+
+   Before proceeding with any code execution or data download, please read and acknowledge the following:
+
+   #### Disclaimer
+
+   The following code and any datasets it may download or use adhere to the UCI Machine Learning Repository citation policy. This includes properly citing both the UCI Machine Learning Repository itself and any relevant papers associated with specific datasets. No modification or distribution of UCI datasets is permitted without proper authorization.
+
+
+
+1. In the development account, use the [provided example notebook](source/sm-mlflow_model_registry_register_model_shared_model_group.ipynb) in JupyterLab to:
    - Prepare the credit risk dataset
    - Train a model using MLflow for experiment tracking
    - Register the best model to the shared model package group
 If you are downloading and uploding the notebook manually, remember to include the [requirements.txt](source/requirements.txt) file as well.
 
 2. The EventBridge rule setup in the Hub account is set to track every `Model package state change`. This can be the variable  `ModelApprovalStatus` visible on the SageMaker UI, but will also track the `StageStatus` variable inside the `ModelLifeCycle`, cfr the documentation about the [model registry staging construct setup](https://docs.aws.amazon.com/sagemaker/latest/dg/model-registry-staging-construct-set-up.html). 
-In the shared services account, review and approve the registered model from the Amazon Sagemaker console (i.e. `ModelApprovalStatus`). It is important to know that the shared model can't be deployed unless is in `Approved` state.
+In the shared services account, review and approve the registered model from the Amazon Sagemaker studio model registry (i.e. `ModelApprovalStatus`). It is important to know that the shared model can't be deployed unless is in `Approved` state.
 
-3. Deploy the shared model, once approved, to the test account using the [provided example notebook](source/deploy-shared-model.ipynb).
+   ![modelapproval](assets/modelapproval1.png)
 
-4. Build an Amazon QuickSight dashboard to monitor model lifecycle statuses and deployed model endpoint metrics. You can find an [example Amazon QuickSight dashboard for Model Governance here](assets/quicksight/README.md)
+   ![modelapproval](assets/modelapproval2.png)
+
+3. Deploy the shared model, once approved, to the test account using JupyterLab [provided example notebook](source/deploy-shared-model.ipynb).
+
+4. Build an Amazon QuickSight dashboard to monitor model lifecycle statuses in the hub account. You can find an [example Amazon QuickSight dashboard for Model Governance here](assets/quicksight/README.md)
 
 
 ## Next Steps 
