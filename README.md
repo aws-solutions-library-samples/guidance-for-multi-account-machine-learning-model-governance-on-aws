@@ -37,10 +37,18 @@ We recommend creating a [Budget](https://docs.aws.amazon.com/cost-management/lat
 ### Sample Cost Table
 
 | AWS service  | Dimensions | Cost [USD] |
-| ------------ | ---------- | ---------- |
+|--------------|------------|------------|
 | Amazon SageMaker | 1 ml.m5.large instance running 8 hours/day | $91.20/month |
 | Amazon S3 | 50 GB storage, 1000 PUT/COPY/POST/LIST requests | $1.25/month |
 | AWS Lambda | 1 million invocations, 128 MB memory, 1 sec duration | $0.20/month |
+| Amazon DynamoDB | 5 GB storage, 1 million write requests, 5 million read requests | $6.25/month |
+| Amazon Athena | 100 GB scanned per month | $5.00/month |
+| Amazon QuickSight | 1 user, Standard Edition | $9.00/month |
+| Amazon CloudWatch | 5 custom metrics, 5 alarms, 100,000 API requests | $5.00/month |
+| AWS Glue Data Catalog | Up to 1 million objects stored | $1.00/month |
+
+Total estimated cost: $118.90/month
+
 
 ## Prerequisites 
 This solution is designed for AWS accounts that are part of the same AWS Organization. It leverages StackSets, which deploy resources from the Hub Account to all spoke accounts. In order to use this guidance, you need the necessary permissions defined in your AWS accounts to enable Stacksets. Additionally, the Model Hub account must be either the organization's management account or the delegated administrator account. Best practice recommends using the delegated administrator account approach.
@@ -189,6 +197,7 @@ In the shared services account, review and approve the registered model from the
 - 1.Hub / Shared Account ID
 - 2.KMS Key id deployed in the Hub account (not the entire Arn)
 - 3.S3 bucket name created in the Hub account (The template HubS3BucketName parameter value)
+- 4.Region
 
 **Deploy the shared model, once approved, to the test account using JupyterLab notebook below.JupyterLab [provided example notebook](source/deploy-shared-model.ipynb).**
 
@@ -224,6 +233,18 @@ In the shared services account, review and approve the registered model from the
 For any feedback, questions, or suggestions, please use the issues tab under this repo.
 
 ## Authors 
+- Anastasia Tzeveleka
+- Aswathy Prasad
+- Ettiene Klopper
+- Judith Joseph
+- Kait Healy
+- Luca Perrozzi
+- Madhu Nagaraj
+- Mahesh Balumuri
+- Ram Vittal
+- Saumitra Vikram
+- Siamak Nariman
+- Yash Raithatha
 
 
 
