@@ -2,7 +2,7 @@
 
 ## Table of Contents
 
-1. [Overview](## overview)
+1. [Overview](## Overview)
     - [Cost](#cost)
 2. [Prerequisites](#prerequisites-required)
     - [Operating System](#operating-system-required)
