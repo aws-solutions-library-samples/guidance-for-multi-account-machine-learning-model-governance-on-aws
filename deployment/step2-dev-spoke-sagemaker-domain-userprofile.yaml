@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'SO9561- Step 2 - Create resources in Data Science Account: SageMaker Studio Domain, User Profile, Jupyter and Mlflow Apps'
+Description: ' Step 2 - Create resources in Data Science Account: SageMaker Studio Domain, User Profile, Jupyter and Mlflow Apps'
 
 Parameters:
   DomainName:
@@ -118,7 +118,9 @@ Resources:
             - '    ''then'','
             - '    ''   echo "Running in job mode, skip lcc"'','
             - '    ''else'','
-            - '    ''   git clone https://github.com/aws-samples/genai-ml-platform-examples'','
+            - '    ''   echo "Make sure we restart a stopped instance, git clone will fail of the repo exists below"'','
+            - '    ''   rm -rf guidance-for-multi-account-machine-learning-model-governance-on-aws'','
+            - '    ''   git clone https://github.com/aws-solutions-library-samples/guidance-for-multi-account-machine-learning-model-governance-on-aws.git'','
             - '    ''   echo "Files cloned from GitHub repo"'','
             - '    ''fi'','
             - '    '''','
@@ -217,7 +219,7 @@ Resources:
         AppType: JupyterLab
         JupyterLabAppSettings:
           CodeRepositories: 
-            - RepositoryUrl: https://github.com/aws-samples/amazon-sagemaker-from-idea-to-production.git
+            - RepositoryUrl: https://github.com/aws-solutions-library-samples/guidance-for-multi-account-machine-learning-model-governance-on-aws.git
           DefaultResourceSpec:
             InstanceType: ml.t3.large
         SpaceStorageSettings:
@@ -404,6 +406,130 @@ Resources:
       Tags:
         - Key: Name
           Value: SageMaker Subnet
+  
+  SMEndPointStateChangeEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: SageMakerEndointStateChangeRule
+      Description: "Rule to capture SageMaker endpoint state changes"
+      EventPattern:
+        source:
+          - "aws.sagemaker"
+        detail-type:
+          - "SageMaker Endpoint State Change"
+        detail:
+          EndpointStatus:
+            - "IN_SERVICE"
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SmEndpointStateTrackLambdaFunction.Arn
+          Id: "TargetLambdaFunction"
+
+  SmEndpointStateTrackLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SmEndpointStateTrackLambdaFunction
+      Runtime: python3.12
+      Environment:
+        Variables:
+          HUB_ACCOUNT: !Ref HubAccountId
+          MODEL_DYANMO_TABLE: sagemakermodelendpoints
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+
+          def lambda_handler(event, context):
+              # Extract endpoint name from the event
+              endpoint_name = event['detail']['EndpointName']
+              tags = event['detail']['Tags']
+              if tags.get("MODEL_PACKAGE_ARN"):
+                  # Prepare data for DynamoDB
+                  item = {
+                      'endpointname': endpoint_name,
+                      'modelpackagearn': tags.get("MODEL_PACKAGE_ARN"),
+                      'accountid': event['account'],
+                  }
+                  
+                  # Assume role in the other account
+                  sts = boto3.client('sts')
+                  assumed_role = sts.assume_role(
+                      RoleArn=f"arn:aws:iam::{os.environ['HUB_ACCOUNT']}:role/SageMakerModelEndpointMetricsDDBRole",
+                      RoleSessionName='AssumeRoleSession'
+                  )
+                  
+                  # Create DynamoDB client for the other account
+                  dynamodb = boto3.resource(
+                      'dynamodb',
+                      aws_access_key_id=assumed_role['Credentials']['AccessKeyId'],
+                      aws_secret_access_key=assumed_role['Credentials']['SecretAccessKey'],
+                      aws_session_token=assumed_role['Credentials']['SessionToken'],
+                      region_name=event['region']
+                  )
+                  
+                  # Update DynamoDB table in the other account
+                  table = dynamodb.Table(os.environ['MODEL_DYANMO_TABLE'])
+                  table.put_item(Item=item)
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Successfully updated DynamoDB')
+              }
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SMEndpoint
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource: !Sub 'arn:aws:iam::${HubAccountId}:role/SageMakerModelEndpointMetricsDDBRole'
+
+
+  CloudWatchCrossAccountSharingRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${HubAccountId}:root'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: CloudWatchCrossAccountAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:PutMetricData'
+                  - 'cloudwatch:GetMetricData'
+                  - 'cloudwatch:ListMetrics'
+                  - 'cloudwatch:GetMetricStatistics'
+                Resource: '*'
+
+  # CloudWatchCrossAccountSharing:
+  #   Type: 'AWS::CloudWatch::CrossAccountSharing'
+  #   Properties:
+  #     AccountId: !Ref HubAccountId
+  #     RoleArn: !Ref HubAccountRoleArn
 
 Outputs:
   DomainId:
