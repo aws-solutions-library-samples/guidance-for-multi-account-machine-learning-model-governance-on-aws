@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-Description: "SO9561 -CloudFormation template to create a KMS key with specific IAM role permissions"
+Description: "CloudFormation template to create a KMS key with specific IAM role permissions"
 
 Parameters:
   DevSpokeAccountSageMakerRoleName:

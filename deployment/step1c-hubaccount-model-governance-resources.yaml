@@ -1,5 +1,5 @@
 Transform: AWS::Serverless-2016-10-31
-Description: 'SO9561 -CloudFormation template for SageMaker metrics collection, Model Package State Change Event Capture and setup for dashboard in Amazon QuickSight'
+Description: 'CloudFormation template for SageMaker metrics collection, Model Package State Change Event Capture and setup for dashboard in Amazon QuickSight'
 Parameters:
   AthenaCatalogName:
     Description: This is the name of the lambda function that will be created. This
@@ -47,6 +47,14 @@ Parameters:
     Description: The QuickSight username that to be used to create the Datasource and Dataset (it can be retrieved with the aws cli command - aws quicksight list-users --aws-account-id YOUR_AWS_ACCOUNT_ID --namespace default)
     Default: ''
     Type: String
+  
+  DevSpokeId:
+    Type: String
+    Description: AWS account ID of Dev account to which model package is shared
+
+  TestSpokeId:
+    Type: String
+    Description: AWS account ID of Test account to which model package is shared
 
 Conditions:
   HasKMSKeyId:
@@ -77,6 +85,42 @@ Conditions:
     - ap-east-1
 
 Resources:
+
+  ModelEndpointsDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: sagemakermodelendpoints
+      AttributeDefinitions:
+        - AttributeName: endpointname
+          AttributeType: S
+      KeySchema:
+        - AttributeName: endpointname
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  CrossAccountAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SageMakerModelEndpointMetricsDDBRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub 'arn:aws:iam::${DevSpokeId}:root'
+                - !Sub 'arn:aws:iam::${TestSpokeId}:root'
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBPutItemAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt ModelEndpointsDynamoDBTable.Arn
 
 # Dynamodb-Athena Connector
 
@@ -164,6 +208,7 @@ Resources:
     DependsOn:
       - ModelPackageStateChangesTable
       - MetricsTable
+      - ModelEndpointsDynamoDBTable
     Type: AWS::IAM::Policy
     Properties:
       PolicyName: FunctionExecutionPolicy
@@ -172,7 +217,6 @@ Resources:
         Statement:
         - Action:
           - dynamodb:DescribeTable
-          - dynamodb:ListTables
           - dynamodb:Query
           - dynamodb:Scan
           - dynamodb:PartiQLSelect
@@ -180,6 +224,7 @@ Resources:
           Resource: 
             - !GetAtt ModelPackageStateChangesTable.Arn
             - !GetAtt MetricsTable.Arn
+            - !GetAtt ModelEndpointsDynamoDBTable.Arn
         - Action:
           - glue:GetTableVersions
           - glue:GetPartitions
@@ -190,6 +235,7 @@ Resources:
           - glue:GetPartition
           - glue:GetDatabase
           - athena:GetQueryExecution
+          - dynamodb:ListTables
           Effect: Allow
           Resource: '*'
         - Action:
@@ -255,13 +301,13 @@ Resources:
       AttributeDefinitions:
         - AttributeName: modelpackagearn
           AttributeType: S
-        - AttributeName: modelstage
-          AttributeType: S
+        # - AttributeName: modelstage
+          # AttributeType: S
       KeySchema:
         - AttributeName: modelpackagearn
           KeyType: HASH
-        - AttributeName: modelstage
-          KeyType: RANGE
+        # - AttributeName: modelstage
+          # KeyType: RANGE
       BillingMode: PAY_PER_REQUEST
 
   LambdaExecutionRole:
@@ -326,68 +372,154 @@ Resources:
           import time
           import json
           import logging
+          from decimal import Decimal
 
           logger = logging.getLogger()
           logger.setLevel(logging.INFO)
 
+          model_metrics = {
+              "/aws/sagemaker/Endpoints": {
+                  "CPUUtilization": {
+                      "title": "CPUUtilization",
+                      "Stat": "Average",
+                      "Unit": "Percent",
+                  }
+              },
+              "AWS/SageMaker": {
+                  "invocations": {
+                      "title": "Invocations",
+                      "Stat": "Average",
+                  },
+                  "latency": {
+                      "title": "ModelLatency",
+                      "Stat": "Maximum",
+                  },
+                  "DiskUtilization": {
+                      "title": "DiskUtilization",
+                      "Stat": "Maximum",
+                  },
+              },
+              "aws/sagemaker/Endpoints/model-metrics": {
+                  "precision": {
+                      "title": "Precision",
+                      "Stat": "Maximum",
+                  },
+                  "accuracy": {
+                      "title": "Accuracy",
+                      "Stat": "Maximum",
+                  },
+                  "f2": {
+                      "title": "F2Score",
+                      "Stat": "Maximum",
+                  },
+                  "total_number_of_violations": {
+                      "title": "TotalViolations",
+                      "Stat": "Maximum",
+                  },
+              },
+          }
+
+          dynamodb_table_columns = [
+              "EndpointName",
+              "CPUUtilization",
+              "Invocations",
+              "ModelLatency",
+              "DiskUtilization",
+              "Precision",
+              "Accuracy",
+              "F2Score",
+              "TotalViolations",
+          ]
+
+
           def handler(event, context):
               session = boto3.Session()
-              cloudwatch = session.client('cloudwatch')
-              dynamodb = session.resource('dynamodb')
-              table = dynamodb.Table('SageMakerEndpointMetrics')
+              cloudwatch = session.client("cloudwatch")
+              dynamodb = session.resource("dynamodb")
+              table = dynamodb.Table("sagemakerendpointmetrics")
 
-              paginator = cloudwatch.get_paginator('list_metrics')
+              paginator = cloudwatch.get_paginator("list_metrics")
 
-              pagination_config = {'IncludeLinkedAccounts': True}
+              pagination_config = {"IncludeLinkedAccounts": True}
 
-              endpoint_names = set()
-              for page in paginator.paginate(Namespace='/aws/sagemaker/Endpoints', **pagination_config):
-                  for metric in page['Metrics']:
-                      for dimension in metric['Dimensions']:
-                          if dimension['Name'] == 'EndpointName':
-                              endpoint_names.add(dimension['Value'])
-
-              logger.info(f"Found {len(endpoint_names)} SageMaker endpoints: {', '.join(endpoint_names)}")
-
+              metrics_to_be_collected = dict()
+              for namespace in model_metrics.keys():
+                  for page in paginator.paginate(Namespace=namespace, **pagination_config):
+                      for index, metric in enumerate(page["Metrics"]):
+                          metric_name = metric["MetricName"]
+                          if metric_name in model_metrics[namespace].keys():
+                              if page["OwningAccounts"][index] not in metrics_to_be_collected:
+                                  metrics_to_be_collected[page["OwningAccounts"][index]] = {}
+                              endpoint_name = ""
+                              dimensions = metric["Dimensions"]
+                              for dimension in dimensions:
+                                  if dimension["Name"] == "EndpointName":
+                                      endpoint_name = dimension["Value"]
+                              if endpoint_name not in metrics_to_be_collected[page["OwningAccounts"][index]]:
+                                  metrics_to_be_collected[page["OwningAccounts"][index]][endpoint_name] = {}
+                              metrics_to_be_collected[page["OwningAccounts"][index]][endpoint_name][metric_name] = {
+                                  "Namespace": metric["Namespace"],
+                                  "MetricName": metric_name,
+                                  "Dimensions": metric["Dimensions"],
+                              }
               current_time = int(time.time())
-              start_time = current_time - 60
+              start_time = current_time - (60 * 15)
+              period_in_seconds = 60 * 15
+              for account, endpoints in metrics_to_be_collected.items():
+                  for endpoint, metrics in endpoints.items():
+                      MetricDataQueries = [] 
+                      logger.info(f"Collecting metrics for account: {account}, endpoint: {endpoint}")
+                      for metric_name, metric in metrics.items():
+                          query = {
+                                  "Id": metric_name.lower(),
+                                  "AccountId": account,
+                                  "MetricStat": {
+                                      "Metric": metric,
+                                      "Period": period_in_seconds,
+                                      "Stat": model_metrics[metric["Namespace"]][metric["MetricName"]][
+                                          "Stat"
+                                      ],
+                                  },
+                              }
+                          unit = model_metrics[metric["Namespace"]][metric["MetricName"]].get("Unit")
+                          if unit:
+                              query["MetricStat"]["Unit"] = unit
+                          MetricDataQueries.append(query)
+                      metrics_results = cloudwatch.get_metric_data(
+                          MetricDataQueries=MetricDataQueries,
+                          StartTime=start_time,
+                          EndTime=current_time,
+                      )
+                      endpoints_data = {}
+                      for res in metrics_results["MetricDataResults"]:
+                          labels = res["Label"].split(" ")
+                          namespace = labels[0]
+                          metric_name = labels[-1]
+                          if namespace not in model_metrics.keys():
+                              for ns in model_metrics.keys():
+                                  if metric_name in model_metrics[ns].keys():
+                                      namespace = ns
+                          endpoint_name = endpoint
+                          if endpoint_name not in endpoints_data:
+                              endpoints_data[endpoint_name] = {}
+                          endpoints_data[endpoint_name]["endpointarn"] = endpoint_name
+                          endpoints_data[endpoint_name]["AccountId"] = str(account)
+                          endpoints_data[endpoint_name]["Timestamp"] = current_time
+                          endpoints_data[endpoint_name][model_metrics[namespace][metric_name]["title"]] = Decimal(str(res["Values"][0])) if res["Values"] else 0
+                      for endpoint_name, item in endpoints_data.items():
+                          for col in dynamodb_table_columns:
+                              if col not in item:
+                                  item[col] = 0
+                          table.put_item(Item=item)
 
-              for endpoint_name in endpoint_names:
-                  logger.info(f"Collecting metrics for endpoint: {endpoint_name}")
-                  metrics = cloudwatch.get_metric_data(
-                      MetricDataQueries=[
-                          {'Id': 'invocations', 'MetricStat': {'Metric': {'Namespace': 'AWS/SageMaker', 'MetricName': 'Invocations', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Average'}},
-                          {'Id': 'latency', 'MetricStat': {'Metric': {'Namespace': 'AWS/SageMaker', 'MetricName': 'ModelLatency', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
-                          {'Id': 'precision', 'MetricStat': {'Metric': {'Namespace': 'aws/sagemaker/Endpoints/model-metrics', 'MetricName': 'precision', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
-                          {'Id': 'accuracy', 'MetricStat': {'Metric': {'Namespace': 'aws/sagemaker/Endpoints/model-metrics', 'MetricName': 'accuracy', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
-                          {'Id': 'f2', 'MetricStat': {'Metric': {'Namespace': 'aws/sagemaker/Endpoints/model-metrics', 'MetricName': 'f2', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
-                          {'Id': 'violations', 'MetricStat': {'Metric': {'Namespace': 'aws/sagemaker/Endpoints/model-metrics', 'MetricName': 'total_number_of_violations', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
-                          {"Id":"cpu_utilization", "MetricStat": {"Metric": {"Namespace":"/aws/sagemaker/Endpoints","MetricName": "CPUUtilization","Dimensions":[{"Name":"EndpointName","Value":endpoint_name},{"Name":"VariantName","Value":"AllTraffic"}]},"Period":60,"Stat":"Average","Unit":"Percent"},"Label":"SageMaker Endpoint CPU Utilization"},
-                          {'Id': 'disk', 'MetricStat': {'Metric': {'Namespace': 'AWS/SageMaker', 'MetricName': 'DiskUtilization', 'Dimensions': [{'Name': 'EndpointName', 'Value': endpoint_name}]}, 'Period': 60, 'Stat': 'Maximum'}},
-                      ],
-                      StartTime=start_time,
-                      EndTime=current_time
-                  )
-                  
-                  item = {
-                      'EndpointName': endpoint_name,
-                      'Timestamp': current_time,
-                      'Invocations': metrics['MetricDataResults'][0]['Values'][0] if metrics['MetricDataResults'][0]['Values'] else 0,
-                      'ModelLatency': metrics['MetricDataResults'][1]['Values'][0] if metrics['MetricDataResults'][1]['Values'] else 0,
-                      'Precision': metrics['MetricDataResults'][2]['Values'][0] if metrics['MetricDataResults'][2]['Values'] else 0,
-                      'Accuracy': metrics['MetricDataResults'][3]['Values'][0] if metrics['MetricDataResults'][3]['Values'] else 0,
-                      'F2Score': metrics['MetricDataResults'][4]['Values'][0] if metrics['MetricDataResults'][4]['Values'] else 0,
-                      'TotalViolations': metrics['MetricDataResults'][5]['Values'][0] if metrics['MetricDataResults'][5]['Values'] else 0,
-                      'CPUUtilization': metrics['MetricDataResults'][6]['Values'][0] if metrics['MetricDataResults'][6]['Values'] else 0,
-                      'DiskUtilization': metrics['MetricDataResults'][7]['Values'][0] if metrics['MetricDataResults'][7]['Values'] else 0,
-                  }
-                  
-                  table.put_item(Item=item)
-              
               return {
-                  'statusCode': 200,
-                  'body': json.dumps('Metrics collected and stored successfully')
+                  "statusCode": 200,
+                  "body": json.dumps("Metrics collected and stored successfully"),
               }
+
+
+          if __name__ == "__main__":
+              handler(None, None)
 
       Runtime: python3.12
       Timeout: 300
@@ -416,6 +548,7 @@ Resources:
           logger.setLevel(logging.INFO)
 
           def lambda_handler(event, context):
+              # cfr https://docs.aws.amazon.com/sagemaker/latest/dg/automating-sagemaker-with-eventbridge.html#eventbridge-model-package
               # try:
                   logger.info("Received event: " + json.dumps(event))
                   detail = event['detail']
@@ -424,79 +557,58 @@ Resources:
                   event_time = event['time']
                   
                   model_package_arn = detail.get('ModelPackageArn', 'N/A')
-                  modelstage = detail.get('ModelLifeCycle', {}).get('Stage', 'N/A') if detail.get('ModelLifeCycle', {}) else "N/A"
+                  # modelstage = detail.get('ModelLifeCycle', {}).get('Stage', 'N/A') if detail.get('ModelLifeCycle', {}) else "N/A"
                   
                   # Define the primary key
                   key = {
                       'modelpackagearn': model_package_arn,
-                      'modelstage': modelstage
+                      # 'modelstage': modelstage
                   }
                   
-                  if model_package_arn != 'N/A':
-                      # Get ModelCard information from describe_model_package
-                      response = sagemaker_client.describe_model_package(ModelPackageName=model_package_arn)
-                      model_card = response.get('ModelCard', {})
-                      logger.info(f"Model Card: {json.dumps(model_card, indent=2)}")
-                      model_card_content = json.loads(model_card.get('ModelCardContent', '{}'))
-                      
-                      # Extract information from model_card_content
-                      business_details = model_card_content.get('business_details', {})
-                      intended_uses = model_card_content.get('intended_uses', {})
-                      additional_info = model_card_content.get('additional_information', {})
-                      custom_details = model_card_content.get('custom_details', {})
-                      model_overview = model_card_content.get('model_overview', {})
-                      custom_details = additional_info.get('custom_details',{})
-                      evaluation_details =  model_card_content.get('evaluation_details', [])
+                  # Get ModelCard information from describe_model_package
+                  response = sagemaker_client.describe_model_package(ModelPackageName=model_package_arn)
+                  model_card = response.get('ModelCard', {})
+                  logger.info(f"Model Card: {json.dumps(model_card, indent=2)}")
+                  model_card_content = json.loads(model_card.get('ModelCardContent', '{}'))
+                  
+                  # Extract information from model_card_content
+                  business_details = model_card_content.get('business_details', {})
+                  intended_uses = model_card_content.get('intended_uses', {})
+                  additional_info = model_card_content.get('additional_information', {})
+                  custom_details = model_card_content.get('custom_details', {})
+                  model_overview = model_card_content.get('model_overview', {})
+                  custom_details = additional_info.get('custom_details',{})
+                  evaluation_details =  model_card_content.get('evaluation_details', [])
 
-                      item = {
-                          'modelpackagearn': model_package_arn,
-                          'creationtime': detail.get('CreationTime', 'N/A'),
-                          'eventtime': event_time,
-                          'eventtype': event.get('detail-type', 'N/A'),
-                          'usecaseid': custom_details.get('UseCaseId', 'N/A'),
-                          'usecasename': custom_details.get('UseCaseName', 'N/A'),
-                          'usecasestage': custom_details.get('UseCaseStage', 'N/A'),
-                          'modelpackagegroupname': detail.get('ModelPackageGroupName', 'N/A'),
-                          'modelpackageversion': detail.get('ModelPackageVersion', 'N/A'),
-                          'modelowner': model_overview.get('model_creator', 'N/A'),
-                          'modellob': business_details.get('line_of_business', 'N/A'),
-                          'modelproject': business_details.get('purpose_of_model', 'N/A'),
-                          'modelstage': detail.get('ModelLifeCycle', {}).get('Stage', 'N/A')  if detail.get('ModelLifeCycle', {}) else "N/A",
-                          'modelstatus': detail.get('ModelLifeCycle', {}).get('StageStatus', 'N/A')  if detail.get('ModelLifeCycle', {}) else "N/A",
-                          'modelapprovalstatus': detail.get('ModelApprovalStatus', 'N/A'),
-                          'modelrisk': intended_uses.get('risk_rating', 'N/A'),
-                          'modelvalidationmetrics': str(evaluation_details[0]) if len(evaluation_details)>0 else "N/A",
-                          # 'modelmonitormetrics': json.dumps(detail.get('ModelMetrics', {})),
-                          'modelaudittimestamp': timestamp,
-                          # 'source': event.get('source', 'N/A'),
-                          # 'region': event.get('region', 'N/A'),
-                          # 'account': event.get('account', 'N/A'),
-                      }
-                  else:
-                      # Fallback to minimal information if ModelPackageArn is not available
-                      item = {
-                          'modelpackagearn': 'N/A',
-                          'eventtime': event_time,
-                          'creationtime': 'N/A',
-                          'usecaseid': 'N/A',
-                          'usecasename': 'N/A',
-                          'usecasestage': 'N/A',
-                          'modelpackagegroupname': detail.get('ModelPackageGroupName', 'N/A'),
-                          'modelpackageversion': detail.get('ModelPackageVersion', 'N/A'),
-                          'modelowner': 'N/A',
-                          'modellob': 'N/A',
-                          'modelproject': 'N/A',
-                          'modelstage': detail.get('ModelLifeCycle', {}).get('Stage', 'N/A')  if detail.get('ModelLifeCycle', {}) else "N/A",
-                          'modelstatus': detail.get('ModelLifeCycle', {}).get('StageStatus', 'N/A')  if detail.get('ModelLifeCycle', {}) else "N/A",
-                          'modelapprovalstatus': detail.get('ModelApprovalStatus', 'N/A'),
-                          'modelrisk': 'N/A',
-                          'modelvalidationmetrics': '{}',
-                          'modelmonitormetrics': '{}',
-                          'modelaudittimestamp': timestamp
-                          # 'source': event.get('source', 'N/A'),
-                          # 'region': event.get('region', 'N/A'),
-                          # 'account': event.get('account', 'N/A'),
-                      }
+                  item = {
+                      'modelpackagearn': model_package_arn,
+                      # cfr https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_CreateModelPackage.html#sagemaker-CreateModelPackage-request-ModelApprovalStatus
+                      'modelapprovalstatus': detail.get('ModelApprovalStatus', 'N/A'),
+                      'creationtime': datetime.fromtimestamp(detail.get('CreationTime')/1000).strftime("%Y-%m-%dT%H:%M:%S.%f") if detail.get('CreationTime') else 'N/A',
+                      'eventtime': event_time,
+                      'eventtype': event.get('detail-type', 'N/A'),
+                      'usecaseid': custom_details.get('UseCaseId', 'N/A'),
+                      'usecasename': custom_details.get('UseCaseName', 'N/A'),
+                      'usecasestage': custom_details.get('UseCaseStage', 'N/A'),
+                      'modelpackagegroupname': detail.get('ModelPackageGroupName', 'N/A'),
+                      'modelpackageversion': detail.get('ModelPackageVersion', 'N/A'),
+                      'modelowner': model_overview.get('model_creator', 'N/A'),
+                      'modeldescription': model_overview.get('description', 'N/A'),
+                      'modellob': business_details.get('line_of_business', 'N/A'),
+                      'modelproject': business_details.get('purpose_of_model', 'N/A'),
+                      # cfr https://docs.aws.amazon.com/sagemaker/latest/dg/model-registry-staging-construct-set-up.html
+                      'modellifecycledevstatus': detail.get('ModelLifeCycle', {}).get('StageStatus', 'N/A')  if detail.get('ModelLifeCycle', {}) and detail.get('ModelLifeCycle', {}).get('Stage', 'N/A') == "Development" else "N/A",
+                      'modellifecycleteststatus': detail.get('ModelLifeCycle', {}).get('StageStatus', 'N/A')  if detail.get('ModelLifeCycle', {}) and detail.get('ModelLifeCycle', {}).get('Stage', 'N/A') == "Staging" else "N/A",
+                      'modellifecycleprodstatus': detail.get('ModelLifeCycle', {}).get('StageStatus', 'N/A')  if detail.get('ModelLifeCycle', {}) and detail.get('ModelLifeCycle', {}).get('Stage', 'N/A') == "Production" else "N/A",
+                      # 'modelstatus': detail.get('ModelLifeCycle', {}).get('StageStatus', 'N/A')  if detail.get('ModelLifeCycle', {}) else "N/A",
+                      'modelrisk': intended_uses.get('risk_rating', 'N/A'),
+                      'modelvalidationmetrics': str(evaluation_details[0]) if len(evaluation_details)>0 else "N/A",
+                      # 'modelmonitormetrics': json.dumps(detail.get('ModelMetrics', {})),
+                      'modelaudittimestamp': timestamp,
+                      # 'source': event.get('source', 'N/A'),
+                      # 'region': event.get('region', 'N/A'),
+                      # 'account': event.get('account', 'N/A'),
+                  }
                   
                   # # Add any additional attributes from the detail
                   # for k, v in detail.items():
@@ -512,7 +624,7 @@ Resources:
                       # response = table.get_item(Key=key)
                       response = table.query( 
                                   KeyConditionExpression=
-                                                          Key('modelstage').eq(modelstage) &
+                                                          # Key('modelstage').eq(modelstage) &
                                                         Key('modelpackagearn').eq(model_package_arn)
                                   )
                       # print("ITEM QUERY RESPONSE:",response)
@@ -670,6 +782,8 @@ Resources:
             InputColumns:
             - Name: modelpackagearn
               Type: STRING
+            - Name: modelapprovalstatus
+              Type: STRING
             - Name: eventtime
               Type: STRING
             - Name: creationtime
@@ -686,33 +800,101 @@ Resources:
               Type: STRING
             - Name: modelowner
               Type: STRING
+            - Name: modeldescription
+              Type: STRING
             - Name: modellob
               Type: STRING
             - Name: modelproject
               Type: STRING
-            - Name: modelstage
+            # - Name: modelstage
+              # Type: STRING
+            # - Name: modelstatus
+              # Type: STRING
+            - Name: modellifecycledevstatus
               Type: STRING
-            - Name: modelstatus
+            - Name: modellifecycleteststatus
+              Type: STRING
+            - Name: modellifecycleprodstatus
               Type: STRING
             - Name: modelrisk
               Type: STRING
             - Name: modelvalidationmetrics
               Type: STRING
-            - Name: modelmonitormetrics
-              Type: STRING
+            # - Name: modelmonitormetrics
+              # Type: STRING
             - Name: modelaudittimestamp
               Type: STRING
-            - Name: source
-              Type: STRING
-            - Name: region
-              Type: STRING
-            - Name: account
-              Type: STRING
+            # - Name: source
+              # Type: STRING
+            # - Name: region
+              # Type: STRING
+            # - Name: account
+              # Type: STRING
       LogicalTableMap:
         LogicalTable:
           Alias: MyLogicalTable
           Source:
             PhysicalTableId: SourceTable
+
+  ModelMetricsTableQuicksightDataset:
+    Type: AWS::QuickSight::DataSet
+    DependsOn: QuickSightAthenaDataSource
+    Properties: 
+      AwsAccountId: !Ref 'AWS::AccountId'
+      DataSetId: Model-Metrics-Table-Quicksight-Dataset
+      Name: Model-Metrics-Table-Quicksight-Dataset
+      ImportMode: DIRECT_QUERY
+      Permissions: 
+        - Principal: !Sub arn:aws:quicksight:${AWS::Region}:${AWS::AccountId}:user/default/${QuickSightUserName}
+          Actions:
+            - quicksight:DeleteDataSet
+            - quicksight:CreateIngestion
+            - quicksight:CancelIngestion
+            - quicksight:DescribeDataSet
+            - quicksight:DescribeDataSetPermissions
+            - quicksight:PassDataSet
+            - quicksight:DescribeIngestion
+            - quicksight:ListIngestions
+            - quicksight:UpdateDataSetPermissions
+            - quicksight:UpdateDataSet
+      PhysicalTableMap:
+        SourceTable:
+          RelationalTable:
+            DataSourceArn: !GetAtt QuickSightAthenaDataSource.Arn
+            Catalog: !Ref AthenaDataCatalog
+            Schema: "default"
+            Name: !Ref MetricsTable
+            InputColumns:
+            - Name: endpointarn
+              Type: STRING
+            - Name: AccountId
+              Type: STRING
+            - Name: Accuracy
+              Type: DECIMAL
+            - Name: CPUUtilization
+              Type: DECIMAL
+            - Name: DiskUtilization
+              Type: DECIMAL
+            - Name: EndpointName
+              Type: STRING
+            - Name: F2Score
+              Type: DECIMAL
+            - Name: Invocations
+              Type: DECIMAL
+            - Name: ModelLatency
+              Type: DECIMAL
+            - Name: Precision
+              Type: DECIMAL
+            - Name: Timestamp
+              Type: DECIMAL
+            - Name: TotalViolations
+              Type: DECIMAL
+      LogicalTableMap:
+        LogicalTable:
+          Alias: MyMetricsLogicalTable
+          Source:
+            PhysicalTableId: SourceTable
+
 
 # Update QuickSight Policy
   InvokeFunctionInlinePolicy:
@@ -753,6 +935,30 @@ Resources:
                 - bucketName:
                     Ref: S3Bucket
 
+  CrossAccountCloudwatchSharingRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'SageMakerGovCrossAccountCloudwatchMonitoring'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: CloudWatchCrossAccountSharingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:GetMetricData'
+                  - 'cloudwatch:ListMetrics'
+                  - 'cloudwatch:GetMetricStatistics'
+                  - 'cloudwatch:GetMetricStream'
+                Resource: '*'
+
 
 Outputs:
   MetricsCollectorFunctionArn:
@@ -767,4 +973,8 @@ Outputs:
   ModelPackageStateChangeRuleArn:
     Description: "ARN of the ModelPackage State Change Rule"
     Value: !GetAtt ModelPackageStateChangeRule.Arn
+  CrossAccountCloudwatchRoleArn:
+    Description: ARN of the cross-account sharing role
+    Value: !GetAtt CrossAccountCloudwatchSharingRole.Arn
+
     

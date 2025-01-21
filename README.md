@@ -52,6 +52,7 @@ Total estimated cost: $118.90/month
 
 ## Prerequisites 
 This solution is designed for AWS accounts that are part of the same AWS Organization. It leverages StackSets, which deploy resources from the Hub Account to all spoke accounts. In order to use this guidance, you need the necessary permissions defined in your AWS accounts to enable Stacksets. Additionally, the Model Hub account must be either the organization's management account or the delegated administrator account. Best practice recommends using the delegated administrator account approach.
+In the following we will assume the creation of a StackSet using the CloudFormation console and Service Managed permissions. You can find a more comprehensive list of commands using [AWS CLI in this README](assets/stacksets/README.md).
 
 To set up the required permissions for creating a stack set with self-managed permissions, see [Grant self-managed permissions](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/stacksets-prereqs-self-managed.html).
 
@@ -109,8 +110,8 @@ Required packages:
 - Finally, remaining in the shared services / hub account, upload the file named [step1c-hubaccount-model-governance-resources.yaml](deployment/step1c-hubaccount-model-governance-resources.yaml) to Cloudformation in the console. Alternatively you can use the [CLI commands](https://docs.aws.amazon.com/cli/latest/reference/cloudformation/deploy/#examples).
    - Create the Amazon QuickSight instance. Please make sure the appropriate permissions are given. While giving access, please choose the Amazon S3 bucket name that starts with ```<sagemaker>-<region>-<accountid>-<bucketid>```
      ![Security and Permissions](assets/qsightperms.gif)
-   - The template takes 10 input parameters:
-      - 7 required: **AthenaCatalogName** (the name of the lambda function that will be created to query DynamoDb via Athena), S3 bucket **SpillBucket** (service bucket for Athena queries), **SpillPrefix** (prefix within SpillBucket to spill data from Athena queries),   **DisableSpillEncryption** (if set to `true` the encryption for spilled data is disabled), **LambdaTimeout** ( Lambda invocation runtime in seconds), **LambdaMemory** (Lambda memory in MB),   **QuickSightUserName** (The QuickSight username that to be used to create the Datasources and Datasets, it can be retrieved with the command `aws quicksight list-users --aws-account-id YOUR_AWS_ACCOUNT_ID --namespace default`)
+   - The template takes 12 input parameters:
+      - 9 required: **DevSpokeId** (AWS account ID of Dev account to which model package is shared), **TestSpokeId** (AWS account ID of Test account to which model package is shared), **AthenaCatalogName** (the name of the lambda function that will be created to query DynamoDb via Athena), S3 bucket **SpillBucket** (service bucket for Athena queries), **SpillPrefix** (prefix within SpillBucket to spill data from Athena queries),   **DisableSpillEncryption** (if set to `true` the encryption for spilled data is disabled), **LambdaTimeout** ( Lambda invocation runtime in seconds), **LambdaMemory** (Lambda memory in MB),   **QuickSightUserName** (The QuickSight username that to be used to create the Datasources and Datasets, it can be retrieved with the command `aws quicksight list-users --aws-account-id YOUR_AWS_ACCOUNT_ID --namespace default`)
       - 3 optional: **LambdaRole** (a custom, existing IAM role to be used by the Connector Lambda), **KMSKeyId** (use existing KMS Key instead of AES-GCM to encrypt the spilled data by Athena queries), **PermissionsBoundaryARN** (IAM policy ARN to use as the PermissionsBoundary for
       the created Lambda function's execution role)
    - This creates the required DynamoDB tables to capture model package group governance information, approval statuses, as well as Amazon SageMaker endpoint validation metrics, the required EventBridge rules and AWS Lambda functions to orchestrate the data capture and Athena query of DynamoDb tables, and the corresponsing datasources and datasets in Amazon Quicksight ready to be used. All the resources are correlated by IAM policies. 
@@ -246,14 +247,3 @@ For any feedback, questions, or suggestions, please use the issues tab under thi
 - Siamak Nariman
 - Yash Raithatha
 
-
-
-
-
-<!---
-@TODO - find the approriate locations for these instructions in the content above
-------
-
- In the following we will assume the creation of a StackSet using the CloudFormation console and Service Managed permissions. You can find a more comprehensive list of commands using [AWS CLI in this README](assets/stacksets/README.md).
-------
--->

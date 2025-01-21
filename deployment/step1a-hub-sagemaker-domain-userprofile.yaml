@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'SO9561 -CloudFormation template for creating SageMaker Domain and User Profile'
+Description: 'CloudFormation template for creating SageMaker Domain and User Profile'
 
 # step1b <-- creates SM domain and user profile in Hub Account
 

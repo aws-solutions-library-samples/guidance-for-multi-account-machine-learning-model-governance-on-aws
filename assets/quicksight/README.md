@@ -59,13 +59,23 @@ A good starting point on the subject is the extended [Amazon QuickSight document
     
     ![quicksight](<Screenshot 2024-11-15 215408.png>)
 
+## Combining the available information into a consolidated dashboard
+
+- In Amazon Quicksight it is possible to combine different visuals into a single sheet, and multiple sheets into the same Analysis. An example of this can be seen below, where:
+
+   - the first sheet summarizes in a colorful and intuitive way the aggregate numbers for each variable
+
+   ![quicksight](<Screenshot 2025-01-17 165731.png>)
+
+   - the second sheet contains a more comprehensive table with conditional formatting of cells based of the content
+
+   ![quicksight](<Screenshot 2025-01-17 165808.png>)
+
+   - the third sheet contains a very detailed view of all the information available for a single model, which can be selected with a control at the top of the sheet itself
+
+   ![quicksight](<Screenshot 2025-01-17 165925.png>)
+
 ## Publishing the dashboard
 
 - By clicking on the button "PUBLISH" on the top right of the screen, a dashboard will be created containing all the canvases created in the analysis
     
-    ![quicksight](<Screenshot 2024-11-15 215640.png>)
-
-- By clicking on each item in the histograms, detailed informations are shown
-    
-    ![quicksight](<Screenshot 2024-11-15 215658.png>)
-
