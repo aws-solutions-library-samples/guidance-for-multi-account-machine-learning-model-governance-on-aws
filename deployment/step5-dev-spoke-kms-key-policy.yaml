@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
-Description: 'CloudFormation template to add KMS key access policy to Dev Account'
+Description: 'CloudFormation template to add KMS key access policy to Dev Account SO9561'
 
 Parameters:
   DevSpokeAccountSageMakerRoleName:
