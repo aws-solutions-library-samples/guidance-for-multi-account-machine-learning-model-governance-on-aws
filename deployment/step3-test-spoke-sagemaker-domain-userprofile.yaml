@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CloudFormation template for creating SageMaker Domain and User Profile in Hub Account'
+Description: 'CloudFormation template for creating SageMaker Domain and User Profile in Hub Account SO9561'
 
 # Step 1d: CFN for creating SM domain, user-profile in test account 
 # The SM execution role has permission to access S3 bucket in hub account
