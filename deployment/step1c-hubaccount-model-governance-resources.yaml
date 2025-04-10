@@ -1,5 +1,5 @@
 Transform: AWS::Serverless-2016-10-31
-Description: 'CloudFormation template for SageMaker metrics collection, Model Package State Change Event Capture and setup for dashboard in Amazon QuickSight'
+Description: 'CloudFormation template for SageMaker metrics collection, Model Package State Change Event Capture and setup for dashboard in Amazon QuickSight SO9561'
 Parameters:
   AthenaCatalogName:
     Description: This is the name of the lambda function that will be created. This
